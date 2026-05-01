@@ -29,6 +29,9 @@ supabase/.temp/
 # Ghost folder (temporary SQL scripts and notes)
 ghost/
 
+# Documentations
+docs/ 
+
 # Environment variables
 .env
 

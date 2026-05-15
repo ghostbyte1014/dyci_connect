@@ -25,6 +25,7 @@ import {
 import toast from 'react-hot-toast'
 import { generateKeywords as genKeywordsLogic } from '../../utils/chatLogic'
 import { supabase } from '../../lib/supabaseClient'
+import { notifyPosition } from '../../lib/api/notifications'
 import { fetchAcademicYears, type AcademicYear } from '../../lib/api/settings'
 import {
   fetchHandbookTree,
@@ -35,6 +36,7 @@ import { handbookData } from '../../data/handbookData'
 import { isSupabaseConfigured } from '../../lib/supabaseClient'
 import {
   createHandbook,
+  cloneHandbook,
   fetchHandbookApprovalMonitor,
   fetchHandbookApprovals,
   fetchHandbooks,
@@ -189,8 +191,8 @@ const KeywordModal: React.FC<KeywordModalProps> = ({ value, onChange, onConfirm,
 
 // ── Tree node ─────────────────────────────────────────────────────────────
 
-interface TreeNodeProps { node: HandbookNode; selectedId: string | null; onSelect: (id: string) => void; onAddChild: (parentId: string, parentDepth: number) => void; onDelete: (id: string) => void; depth?: number }
-const TreeNode: React.FC<TreeNodeProps> = ({ node, selectedId, onSelect, onAddChild, onDelete, depth = 0 }) => {
+interface TreeNodeProps { node: HandbookNode; selectedId: string | null; onSelect: (id: string) => void; onAddChild: (parentId: string, parentDepth: number) => void; onDelete: (id: string) => void; isPublished?: boolean; depth?: number }
+const TreeNode: React.FC<TreeNodeProps> = ({ node, selectedId, onSelect, onAddChild, onDelete, isPublished, depth = 0 }) => {
   const [open, setOpen] = useState(depth === 0)
   const isSelected = selectedId === node.id
   const hasChildren = node.children.length > 0
@@ -203,12 +205,14 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, selectedId, onSelect, onAddCh
           ) : (<FaFileAlt className={`shrink-0 text-xs ${isSelected ? 'text-blue-400' : 'text-slate-300'}`} />)}
           <span className="truncate">{node.title}</span>
         </div>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
-          <button onClick={(e) => { e.stopPropagation(); onAddChild(node.id, node.depth) }} title="Add child" className="p-1 hover:bg-blue-200 rounded text-blue-600"><FaPlus className="text-[10px]" /></button>
-          <button onClick={(e) => { e.stopPropagation(); onDelete(node.id) }} className="p-1 hover:bg-rose-200 rounded text-rose-500"><FaTrash className="text-[10px]" /></button>
-        </div>
+        {!isPublished && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
+            <button onClick={(e) => { e.stopPropagation(); onAddChild(node.id, node.depth) }} title="Add child" className="p-1 hover:bg-blue-200 rounded text-blue-600"><FaPlus className="text-[10px]" /></button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(node.id) }} className="p-1 hover:bg-rose-200 rounded text-rose-500"><FaTrash className="text-[10px]" /></button>
+          </div>
+        )}
       </div>
-      {open && hasChildren && <div>{node.children.map((child) => <TreeNode key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} depth={depth + 1} />)}</div>}
+      {open && hasChildren && <div>{node.children.map((child) => <TreeNode key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} isPublished={isPublished} depth={depth + 1} />)}</div>}
     </div>
   )
 }
@@ -237,6 +241,7 @@ const Cms: React.FC = () => {
   const [scheduleHandbookTarget, setScheduleHandbookTarget] = useState<Handbook | null>(null)
   const [workflowHandbooks, setWorkflowHandbooks] = useState<Handbook[]>([])
   const [activeHandbookId, setActiveHandbookId] = useState('')
+  const [activeHandbook, setActiveHandbook] = useState<Handbook | null>(null)
   const [editingHandbookLabel, setEditingHandbookLabel] = useState('')
   const [cardMenuOpenId, setCardMenuOpenId] = useState<string | null>(null)
   const [approvalMonitor, setApprovalMonitor] = useState<HandbookApprovalMonitorRow[]>([])
@@ -247,9 +252,43 @@ const Cms: React.FC = () => {
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([])
   const [collegeOffices, setCollegeOffices] = useState<CollegeOffice[]>([])
 
+  const [cloneHandbookTarget, setCloneHandbookTarget] = useState<Handbook | null>(null)
+  const [cloneHandbookTitle, setCloneHandbookTitle] = useState('')
+  const [cloneAcademicYearId, setCloneAcademicYearId] = useState('')
+
+  useEffect(() => {
+    if (cloneHandbookTarget) {
+      setCloneHandbookTitle(`${cloneHandbookTarget.title} (Cloned)`)
+      const currentIdx = academicYears.findIndex(y => y.id === cloneHandbookTarget.academic_year_id)
+      if (currentIdx !== -1 && academicYears[currentIdx + 1]) {
+        setCloneAcademicYearId(academicYears[currentIdx + 1].id)
+      } else {
+        setCloneAcademicYearId('')
+      }
+    }
+  }, [cloneHandbookTarget, academicYears])
+
   useEffect(() => {
     fetchCollegeOffices().then(res => {
-      if (res.data) setCollegeOffices(res.data)
+      if (res.data && res.data.length > 0) {
+        setCollegeOffices(res.data)
+      } else {
+        setCollegeOffices([
+          { id: 'f1', name: 'Scholarship Department', slug: 'scholarship', level: 2, is_active: true, sort_order: 10 },
+          { id: 'f2', name: 'Department of Finance', slug: 'finance', level: 2, is_active: true, sort_order: 20 },
+          { id: 'f3', name: 'Office of the Registrar', slug: 'registrar', level: 2, is_active: true, sort_order: 30 },
+          { id: 'f4', name: 'Guidance & Counseling', slug: 'guidance', level: 2, is_active: true, sort_order: 40 },
+          { id: 'f5', name: 'Property/Security Office', slug: 'property_security', level: 2, is_active: true, sort_order: 50 },
+          { id: 'f6', name: 'Academic Council', slug: 'academic_council', level: 2, is_active: true, sort_order: 60 },
+          { id: 'f7', name: 'Vice President', slug: 'vice_president', level: 3, is_active: true, sort_order: 70 },
+          { id: 'f8', name: 'Office of the President', slug: 'president', level: 3, is_active: true, sort_order: 80 }
+        ])
+      }
+    })
+    fetchAcademicYears().then(res => {
+      if (res.data) {
+        setAcademicYears(res.data)
+      }
     })
   }, [])
 
@@ -273,6 +312,14 @@ const Cms: React.FC = () => {
   const [generatingKeywords, setGeneratingKeywords] = useState(false)
   const [showKeywordModal, setShowKeywordModal] = useState(false)
   const [keywordInput, setKeywordInput] = useState('')
+  const [localTitle, setLocalTitle] = useState('')
+  const [pendingAssignmentToggle, setPendingAssignmentToggle] = useState<ApproverPosition | null>(null)
+  const [generatedKeywordsReview, setGeneratedKeywordsReview] = useState<string[] | null>(null)
+
+  useEffect(() => {
+    if (selectedNode) setLocalTitle(selectedNode.title)
+    else setLocalTitle('')
+  }, [selectedId])
 
   useEffect(() => {
     if (showCreateForm) {
@@ -367,10 +414,8 @@ const Cms: React.FC = () => {
   useEffect(() => { if (isSupabaseConfigured) loadWorkflowHandbooks() }, [loadWorkflowHandbooks])
 
   // Load section-level workflow data when a section node is selected in editor
-  const loadSectionWorkflowData = useCallback(async (sectionIdx: number) => {
-    if (!activeHandbookId || workflowSections.length === 0) { setSectionMeta(null); return }
-    const sec = workflowSections[sectionIdx]
-    if (!sec) { setSectionMeta(null); return }
+  const loadSectionWorkflowData = useCallback(async (sec: HandbookSection) => {
+    if (!activeHandbookId || !sec) { setSectionMeta(null); return }
     setSectionMeta(sec)
     const [assignRes, auditRes, diffRes] = await Promise.all([
       fetchSectionAssignments(sec.id),
@@ -392,9 +437,9 @@ const Cms: React.FC = () => {
     } else {
       setCurrentKeywords([])
     }
-  }, [activeHandbookId, workflowSections])
+  }, [activeHandbookId])
 
-  // When selectedId changes in editor mode, derive the section index
+  // When selectedId changes in editor mode, derive the section
   useEffect(() => {
     if (view !== 'editor' || !selectedId) { setSectionMeta(null); return }
 
@@ -402,17 +447,17 @@ const Cms: React.FC = () => {
     const parts = selectedId.split('.')
     if (parts.length >= 2) {
       const idx = parseInt(parts[1], 10) - 1
-      if (!isNaN(idx) && idx >= 0) {
-        loadSectionWorkflowData(idx)
+      if (!isNaN(idx) && idx >= 0 && workflowSections[idx]) {
+        loadSectionWorkflowData(workflowSections[idx])
         return
       }
     }
 
     // Handle UUID-based IDs - find section by matching db_id in workflowSections
     if (workflowSections.length > 0) {
-      const idx = workflowSections.findIndex(s => s.id === selectedId)
-      if (idx >= 0) {
-        loadSectionWorkflowData(idx)
+      const sec = workflowSections.find(s => s.id === selectedId)
+      if (sec) {
+        loadSectionWorkflowData(sec)
         return
       }
     }
@@ -444,15 +489,35 @@ const Cms: React.FC = () => {
     }
     walk(currentTree)
     if (allNodes.length === 0) return
-    await replaceHandbookSections(handbookId, allNodes.map((n, idx) => ({
-      title: n.title,
-      content: n.content ?? '',
-      sort_order: idx + 1,
-      parent_id: n.parent_id,
-    })))
+
+    const isValidUuid = (id: string | null | undefined): boolean => {
+      if (!id) return false
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+    }
+
+    await replaceHandbookSections(handbookId, allNodes.map((n, idx) => {
+      let resolvedParentId: string | null = n.parent_id
+      if (n.parent_id && !isValidUuid(n.parent_id)) {
+        const parentNode = allNodes.find(p => p.id === n.parent_id)
+        if (parentNode && isValidUuid(parentNode.id)) {
+          resolvedParentId = parentNode.id
+        } else if (parentNode && parentNode.db_id && isValidUuid(parentNode.db_id)) {
+          resolvedParentId = parentNode.db_id
+        } else {
+          resolvedParentId = null
+        }
+      }
+      return {
+        title: n.title,
+        content: n.content ?? '',
+        sort_order: idx + 1,
+        parent_id: resolvedParentId,
+      }
+    }))
   }
 
   const handleAddRoot = async () => {
+    if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!activeHandbookId) { toast.error('Please select a handbook first.'); return }
     const newId = `${tree.length + 1}`
     const node: HandbookNode = { id: newId, parent_id: null, title: `CHAPTER ${newId}`, content: null, sort_order: tree.length + 1, depth: 0, updated_at: '', children: [] }
@@ -469,11 +534,12 @@ const Cms: React.FC = () => {
   }
 
   const handleAddChild = async (parentId: string, parentDepth: number) => {
+    if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!activeHandbookId) { toast.error('Please select a handbook first.'); return }
     const parent = findNode(tree, parentId); if (!parent) return
     const childCount = parent.children.length + 1
     const newId = `${parentId}.${childCount}`
-    const node: HandbookNode = { id: newId, parent_id: parentId, title: 'New Section', content: '<p>Start writing here...</p>', sort_order: childCount, depth: parentDepth + 1, updated_at: '', children: [] }
+    const node: HandbookNode = { id: newId, parent_id: parentId, title: 'New Section', content: '', sort_order: childCount, depth: parentDepth + 1, updated_at: '', children: [] }
     const newTree = updateNodeInTree(tree, parentId, { children: [...(findNode(tree, parentId)?.children ?? []), node] })
     setTree(newTree); setSelectedId(newId)
     if (isSupabaseConfigured) {
@@ -500,10 +566,10 @@ const Cms: React.FC = () => {
           // Reload workflow sections and load data for this section
           const { data: sections } = await fetchSections(activeHandbookId)
           setWorkflowSections(sections ?? [])
-          // Find index and load workflow data
-          const idx = (sections ?? []).findIndex(s => s.id === newSection.db_id || s.id === newSection.id)
-          if (idx >= 0) {
-            await loadSectionWorkflowData(idx)
+          // Find section and load workflow data directly to avoid waiting for state update
+          const sec = (sections ?? []).find(s => s.id === newSection.db_id || s.id === newSection.id)
+          if (sec) {
+            await loadSectionWorkflowData(sec)
           }
         }
       }
@@ -513,6 +579,7 @@ const Cms: React.FC = () => {
   }
 
   const confirmDelete = async () => {
+    if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!pendingDelete) return
     const id = pendingDelete; setPendingDelete(null)
     const nodeToDelete = findNode(tree, id)
@@ -540,7 +607,21 @@ const Cms: React.FC = () => {
   const handleEditorInput = () => { if (selectedId && editorRef.current) handleFieldChange('content', editorRef.current.innerHTML) }
   const execCmd = (command: string, value?: string) => { document.execCommand(command, false, value); editorRef.current?.focus(); handleEditorInput() }
 
+  // ── Auto-save ───────────────────────────────────────────────────────────
+  const autoSaveTimeout = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !activeHandbookId || !selectedNode || activeHandbook?.status === 'published') return
+    if (autoSaveTimeout.current) clearTimeout(autoSaveTimeout.current)
+    autoSaveTimeout.current = setTimeout(async () => {
+      // Auto-save without triggering UI blocking 'saving' state
+      await syncTreeToSections(tree, activeHandbookId)
+    }, 2000)
+    return () => { if (autoSaveTimeout.current) clearTimeout(autoSaveTimeout.current) }
+  }, [tree, isSupabaseConfigured, activeHandbookId, selectedNode, activeHandbook])
+
   const handleSave = async () => {
+    if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!selectedNode || !isSupabaseConfigured) { toast(isSupabaseConfigured ? 'No node selected' : 'Supabase not configured.', { icon: '⚠️' }); return }
     setSaving(true)
 
@@ -573,10 +654,8 @@ const Cms: React.FC = () => {
         return
       }
 
-      // Merge with existing, but keep unique
-      const merged = Array.from(new Set([...currentKeywords, ...suggestions]))
-      setCurrentKeywords(merged)
-      toast.success(`Generated ${suggestions.length} keywords`)
+      setGeneratedKeywordsReview(suggestions)
+      toast.success(`AI suggested ${suggestions.length} keywords`)
     } catch (err: any) {
       console.error('Keyword generation error:', err)
       const msg = err.message || 'Failed to generate keywords'
@@ -584,6 +663,24 @@ const Cms: React.FC = () => {
     } finally {
       setGeneratingKeywords(false)
     }
+  }
+
+  const acceptGeneratedKeywords = async () => {
+    if (!generatedKeywordsReview) return
+    const merged = Array.from(new Set([...currentKeywords, ...generatedKeywordsReview]))
+    setCurrentKeywords(merged)
+    setGeneratedKeywordsReview(null)
+
+    if (selectedNode && selectedNode.depth > 0 && sectionMeta) {
+      await supabase.from('handbook_keywords').delete().eq('section_id', sectionMeta.id)
+      if (merged.length > 0) {
+        await supabase.from('handbook_keywords').insert(
+          merged.map(k => ({ keyword: k, section_id: sectionMeta.id }))
+        )
+      }
+    }
+
+    toast.success('Keywords accepted & saved ✓')
   }
 
   const handleAddManualKeyword = () => {
@@ -605,8 +702,17 @@ const Cms: React.FC = () => {
     }
   }
 
-  const handleRemoveKeyword = (k: string) => {
-    setCurrentKeywords(currentKeywords.filter((kw: string) => kw !== k))
+  const handleRemoveKeyword = async (k: string) => {
+    const nextKeywords = currentKeywords.filter((kw: string) => kw !== k)
+    setCurrentKeywords(nextKeywords)
+    if (sectionMeta) {
+      await supabase
+        .from('handbook_keywords')
+        .delete()
+        .eq('section_id', sectionMeta.id)
+        .eq('keyword', k)
+    }
+    toast.success('Keyword removed ✓')
   }
 
   const handleCreateHandbook = async () => {
@@ -647,6 +753,7 @@ const Cms: React.FC = () => {
       setSelectedId(rootId)
     }
 
+    setActiveHandbook(handbook)
     setActiveHandbookId(handbook.id)
     setEditingHandbookLabel(`${handbook.title} (${handbook.academic_years?.year_name || 'Unknown Year'})`)
     setCardMenuOpenId(null)
@@ -655,12 +762,41 @@ const Cms: React.FC = () => {
 
   const handleAssignmentToggle = async (pos: ApproverPosition) => {
     if (!sectionMeta) return
-    const next = sectionAssignments.includes(pos)
-      ? sectionAssignments.filter((p) => p !== pos)
-      : [...sectionAssignments, pos]
+    const isAdding = !sectionAssignments.includes(pos)
+    const next = isAdding
+      ? [...sectionAssignments, pos]
+      : sectionAssignments.filter((p) => p !== pos)
     setSectionAssignments(next)
     const { error } = await assignSectionToDepartments(sectionMeta.id, next)
-    if (error) toast.error(error)
+    if (error) { toast.error(error); return }
+    await handleSave()
+
+    // If adding a department, automatically submit section to department review (Level 2)
+    if (isAdding) {
+      const { data: stage } = await supabase
+        .from('workflow_stages')
+        .select('id')
+        .eq('workflow_name', 'handbook_approval')
+        .eq('stage_order', 2)
+        .single()
+
+      await supabase
+        .from('handbook_sections')
+        .update({ workflow_stage_id: stage?.id, status: 'dept_review', current_level: 2 })
+        .eq('id', sectionMeta.id)
+
+      await notifyPosition(
+        pos,
+        'New Section Assigned',
+        `The section "${selectedNode?.title || 'Untitled Section'}" has been assigned to your department for review.`
+      )
+    } else {
+      await notifyPosition(
+        pos,
+        'Section Assignment Removed',
+        `The section "${selectedNode?.title || 'Untitled Section'}" has been unassigned from your department.`
+      )
+    }
   }
 
   const handleSubmitSingleToL2 = async () => {
@@ -731,6 +867,29 @@ const Cms: React.FC = () => {
     await loadWorkflowHandbooks()
   }
 
+  const handleCloneHandbook = async () => {
+    if (!cloneHandbookTarget || !cloneHandbookTitle.trim() || !cloneAcademicYearId) return
+    setWorkflowSaving(true)
+    const { data: newHbId, error } = await cloneHandbook(cloneHandbookTarget.id, cloneHandbookTitle.trim(), cloneAcademicYearId)
+    setWorkflowSaving(false)
+    if (error) {
+      toast.error(error)
+      return
+    }
+    toast.success('Handbook successfully cloned!')
+    setCloneHandbookTarget(null); setCloneHandbookTitle(''); setCloneAcademicYearId('')
+    await loadWorkflowHandbooks()
+
+    const { data: handbooks } = await fetchHandbooks()
+    if (handbooks) {
+      setWorkflowHandbooks(handbooks)
+      const freshHb = handbooks.find(h => h.id === newHbId)
+      if (freshHb) {
+        await openEditorForHandbook(freshHb)
+      }
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────
 
   if (!isSupabaseConfigured) return <div className="min-h-screen bg-slate-50 flex items-center justify-center text-sm text-slate-500">Supabase not configured.</div>
@@ -741,7 +900,7 @@ const Cms: React.FC = () => {
     const currentHandbooks = workflowHandbooks.slice((hbPage - 1) * HB_ITEMS_PER_PAGE, hbPage * HB_ITEMS_PER_PAGE)
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
+      <>
         {showKeywordModal && (
           <KeywordModal
             value={keywordInput}
@@ -804,13 +963,26 @@ const Cms: React.FC = () => {
                   </div>
                   <p className="mt-2 text-[10px] text-slate-400">Updated {new Date(h.updated_at).toLocaleString()}</p>
 
-                  {cardMenuOpenId === h.id && (
+                  {cardMenuOpenId === h.id && h.status === 'published' && (
+                    <div className="absolute right-3 top-12 z-10 w-52 rounded-2xl border border-slate-200 bg-white shadow-lg py-1">
+                      <button type="button" onClick={() => openEditorForHandbook(h)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">View contents (Read Only)</button>
+                      <button type="button" onClick={() => openMonitor(h)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">View approval status</button>
+                      <button type="button" onClick={() => { setCloneHandbookTarget(h); setCardMenuOpenId(null) }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"><FaExchangeAlt className="text-blue-500 text-[10px]" /> Clone to new year</button>
+                      <div className="border-t border-slate-100 my-1" />
+                      <div className="px-3 py-1 text-[10px] text-amber-600 bg-amber-50">🔒 Published handbook is locked and archived.</div>
+                    </div>
+                  )}
+
+                  {cardMenuOpenId === h.id && h.status !== 'published' && (
                     <div className="absolute right-3 top-12 z-10 w-52 rounded-2xl border border-slate-200 bg-white shadow-lg py-1">
                       <button type="button" onClick={() => openEditorForHandbook(h)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">Edit contents</button>
                       <button type="button" onClick={() => openAssignmentForHandbook(h)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">Assign Departments</button>
                       <button type="button" onClick={() => { setScheduleHandbookTarget(h); setCardMenuOpenId(null) }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">Schedule publish date</button>
                       <button type="button" onClick={() => handlePublishNow(h.id)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">Publish now</button>
                       <button type="button" onClick={() => openMonitor(h)} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">View approval status</button>
+                      {h.status !== 'draft' && (
+                        <button type="button" onClick={() => { setCloneHandbookTarget(h); setCardMenuOpenId(null) }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"><FaExchangeAlt className="text-blue-500 text-[10px]" /> Clone to new year</button>
+                      )}
                       <div className="border-t border-slate-100 my-1" />
                       <button type="button" onClick={() => { setPendingDeleteHandbook(h); setCardMenuOpenId(null) }} className="w-full text-left px-3 py-2 text-xs text-rose-600 hover:bg-rose-50">Delete handbook</button>
                     </div>
@@ -870,7 +1042,39 @@ const Cms: React.FC = () => {
             </div>
           </div>
         )}
-      </div>
+
+        {cloneHandbookTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+            <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-slate-900">Clone handbook</h2>
+              <p className="text-xs text-slate-500 mt-1">Create a new draft version from "{cloneHandbookTarget.title}"</p>
+              <input value={cloneHandbookTitle} onChange={(e) => setCloneHandbookTitle(e.target.value)} placeholder="Title" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none" />
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-slate-500">Target Academic Year</span>
+                <select
+                  value={cloneAcademicYearId}
+                  onChange={(e) => setCloneAcademicYearId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                >
+                  <option value="" disabled>Select Year</option>
+                  {academicYears.map(y => (
+                    <option key={y.id} value={y.id}>
+                      {y.year_name} {y.is_current ? '(Current)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => { setCloneHandbookTarget(null); setCloneHandbookTitle(''); setCloneAcademicYearId('') }} className="px-4 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+                <button type="button" onClick={handleCloneHandbook} disabled={workflowSaving || !cloneHandbookTitle.trim() || !cloneAcademicYearId} className="px-4 py-2 rounded-lg bg-blue-700 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                  {workflowSaving ? <FaSpinner className="animate-spin text-xs" /> : null}
+                  <span>{workflowSaving ? 'Cloning…' : 'Clone'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
     )
   }
 
@@ -880,7 +1084,7 @@ const Cms: React.FC = () => {
     const currentAssignmentRows = approvalMonitor.slice((assignmentPage - 1) * ASSIGNMENT_ITEMS_PER_PAGE, assignmentPage * ASSIGNMENT_ITEMS_PER_PAGE)
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
+      <>
         <header className="unified-header">
           <div className="unified-header-content flex items-center gap-4">
             <button 
@@ -961,7 +1165,7 @@ const Cms: React.FC = () => {
             </div>
           )}
         </main>
-      </div>
+      </>
     )
   }
 
@@ -971,7 +1175,7 @@ const Cms: React.FC = () => {
     const currentMonitorRows = approvalMonitor.slice((monitorPage - 1) * MONITOR_ITEMS_PER_PAGE, monitorPage * MONITOR_ITEMS_PER_PAGE)
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
+      <>
         <header className="unified-header">
           <div className="unified-header-content flex items-center gap-4">
             <button 
@@ -1050,13 +1254,13 @@ const Cms: React.FC = () => {
             </div>
           )}
         </main>
-      </div>
+      </>
     )
   }
 
   // ── EDITOR VIEW ─────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <>
       {showKeywordModal && (
         <KeywordModal
           value={keywordInput}
@@ -1081,23 +1285,25 @@ const Cms: React.FC = () => {
               <p className="unified-header-subtitle">{editingHandbookLabel || 'Edit handbook content'}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={handleAddRoot} 
-              className="px-4 py-2 bg-white/10 text-white border border-white/20 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-white/20 transition-all"
-            >
-              <FaPlus className="text-[10px] inline mr-2" /> 
-              Add Chapter
-            </button>
-            <button 
-              onClick={handleSave} 
-              disabled={saving || !selectedNode} 
-              className="px-4 py-2 bg-white text-dyci-blue rounded-full text-xs font-bold uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {saving ? <FaSpinner className="text-[10px] animate-spin" /> : <FaSave className="text-[10px]" />} 
-              <span>{saving ? 'Saving…' : 'Save Node'}</span>
-            </button>
-          </div>
+          {activeHandbook?.status !== 'published' && (
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleAddRoot} 
+                className="px-4 py-2 bg-white/10 text-white border border-white/20 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-white/20 transition-all"
+              >
+                <FaPlus className="text-[10px] inline mr-2" /> 
+                Add Chapter
+              </button>
+              <button 
+                onClick={handleSave} 
+                disabled={saving || !selectedNode} 
+                className="px-4 py-2 bg-white text-dyci-blue rounded-full text-xs font-bold uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {saving ? <FaSpinner className="text-[10px] animate-spin" /> : <FaSave className="text-[10px]" />} 
+                <span>{saving ? 'Saving…' : 'Save Node'}</span>
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -1111,7 +1317,7 @@ const Cms: React.FC = () => {
           <div className="flex-1 overflow-y-auto py-1">
             {loading && <div className="flex items-center justify-center py-10 text-slate-400"><FaSpinner className="animate-spin mr-2" /> Loading…</div>}
             {!loading && filteredTree.length === 0 && <p className="text-xs text-slate-400 italic text-center py-6">No chapters or matches found.</p>}
-            {!loading && filteredTree.map((node) => <TreeNode key={node.id} node={node} selectedId={selectedId} onSelect={setSelectedId} onAddChild={handleAddChild} onDelete={(id) => setPendingDelete(id)} />)}
+            {!loading && filteredTree.map((node) => <TreeNode key={node.id} node={node} selectedId={selectedId} onSelect={setSelectedId} onAddChild={handleAddChild} onDelete={(id) => setPendingDelete(id)} isPublished={activeHandbook?.status === 'published'} />)}
           </div>
         </aside>
 
@@ -1133,26 +1339,55 @@ const Cms: React.FC = () => {
                 </div>
               )}
 
-              {/* Rich text editor */}
-              <div className="flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-3 bg-slate-50 shrink-0">
-                  <span className="text-sm font-semibold text-slate-700">{selectedNode.depth === 0 ? 'Chapter Editor' : 'Section Editor'}</span>
-                  <span className="text-slate-300">|</span>
-                  <span className="text-xs text-slate-500 font-mono">{selectedNode.id}</span>
+              {/* Title Editor Card */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 shrink-0 flex flex-col gap-1.5">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Title</label>
+                <input
+                  type="text"
+                  readOnly={activeHandbook?.status === 'published'}
+                  value={localTitle}
+                  onChange={(e) => { setLocalTitle(e.target.value); handleFieldChange('title', e.target.value) }}
+                  className={`w-full text-lg font-bold border-none px-0 focus:ring-0 outline-none placeholder-slate-300 ${activeHandbook?.status === 'published' ? 'text-slate-500 cursor-not-allowed bg-transparent' : 'text-slate-800'}`}
+                  placeholder="Section title…"
+                />
+              </div>
+
+              {/* Rich text body editor Card */}
+              <div className="flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden shrink-0">
+                <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-slate-700">{selectedNode.depth === 0 ? 'Chapter Content' : 'Section Content'}</span>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-xs text-slate-500 font-mono">{selectedNode.id}</span>
+                  </div>
+                  {/* Inline formatting toolbar right in the header */}
+                  {activeHandbook?.status !== 'published' && (
+                    <div className="flex items-center gap-1">
+                      {[{ cmd: 'bold', icon: <FaBold />, title: 'Bold' }, { cmd: 'italic', icon: <FaItalic />, title: 'Italic' }, { cmd: 'underline', icon: <FaUnderline />, title: 'Underline' }].map(({ cmd, icon, title }) => (
+                        <button key={cmd} title={title} onMouseDown={(e) => { e.preventDefault(); execCmd(cmd) }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs">{icon}</button>
+                      ))}
+                      <div className="w-px h-4 bg-slate-200 mx-1" />
+                      <button title="Bullet list" onMouseDown={(e) => { e.preventDefault(); editorRef.current?.focus(); document.execCommand('insertHTML', false, '<ul><li></li></ul>'); handleEditorInput() }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs"><FaListUl /></button>
+                      <button title="Numbered list" onMouseDown={(e) => { e.preventDefault(); editorRef.current?.focus(); document.execCommand('insertHTML', false, '<ol><li></li></ol>'); handleEditorInput() }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs"><FaListOl /></button>
+                    </div>
+                  )}
                 </div>
-                <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center gap-1 shrink-0">
-                  {[{ cmd: 'bold', icon: <FaBold />, title: 'Bold' }, { cmd: 'italic', icon: <FaItalic />, title: 'Italic' }, { cmd: 'underline', icon: <FaUnderline />, title: 'Underline' }].map(({ cmd, icon, title }) => (
-                    <button key={cmd} title={title} onMouseDown={(e) => { e.preventDefault(); execCmd(cmd) }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs">{icon}</button>
-                  ))}
-                  <div className="w-px h-4 bg-slate-200 mx-1" />
-                  <button title="Bullet list" onMouseDown={(e) => { e.preventDefault(); editorRef.current?.focus(); document.execCommand('insertHTML', false, '<ul><li></li></ul>'); handleEditorInput() }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs"><FaListUl /></button>
-                  <button title="Numbered list" onMouseDown={(e) => { e.preventDefault(); editorRef.current?.focus(); document.execCommand('insertHTML', false, '<ol><li></li></ol>'); handleEditorInput() }} className="p-1.5 rounded hover:bg-slate-200 text-slate-600 text-xs"><FaListOl /></button>
+                <div className="relative">
+                  {(!selectedNode.content || selectedNode.content.trim() === '' || selectedNode.content.trim() === '<p><br></p>' || selectedNode.content.trim() === '<br>') && (
+                    <div className="absolute top-0 left-0 px-6 py-5 text-base text-slate-400 pointer-events-none">
+                      Type information here...
+                    </div>
+                  )}
+                  <div
+                    ref={editorRef}
+                    contentEditable={activeHandbook?.status !== 'published'}
+                    suppressContentEditableWarning
+                    onInput={handleEditorInput}
+                    onKeyDown={(e) => { if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertHTML', false, '\u00a0\u00a0\u00a0\u00a0'); handleEditorInput() } }}
+                    className={`px-6 py-5 text-base text-slate-700 leading-relaxed focus:outline-none prose prose-sm prose-slate max-w-none relative overflow-y-auto h-auto ${activeHandbook?.status === 'published' ? 'cursor-not-allowed text-slate-600' : ''}`}
+                    style={{ minHeight: '100px', maxHeight: '300px' }}
+                  />
                 </div>
-                <div className="px-5 py-4 border-b border-slate-100 shrink-0">
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Title</label>
-                  <input type="text" value={selectedNode.title} onChange={(e) => handleFieldChange('title', e.target.value)} className="w-full text-lg font-bold text-slate-800 border-none px-0 focus:ring-0 outline-none placeholder-slate-300" placeholder="Section title…" />
-                </div>
-                <div ref={editorRef} contentEditable suppressContentEditableWarning onInput={handleEditorInput} onKeyDown={(e) => { if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertHTML', false, '\u00a0\u00a0\u00a0\u00a0'); handleEditorInput() } }} className="overflow-y-auto px-5 py-4 text-sm text-slate-700 leading-relaxed focus:outline-none prose prose-sm prose-slate max-w-none" style={{ minHeight: '150px' }} />
               </div>
 
               {/* Workflow panel (only for depth>0 sections) */}
@@ -1165,25 +1400,27 @@ const Cms: React.FC = () => {
                         <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">Support Chat Keywords</h4>
                         <p className="text-[10px] text-slate-500 mt-0.5">Keywords that trigger this section in support chat</p>
                       </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleGenerateKeywords}
-                          disabled={generatingKeywords}
-                          className="px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-[10px] font-bold text-blue-700 hover:bg-blue-50 flex items-center gap-1.5 shadow-sm transition-all"
-                        >
-                          {generatingKeywords ? <FaSpinner className="animate-spin" /> : <FaPlus className="text-[9px]" />}
-                          AI Generate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleAddManualKeyword}
-                          className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-[10px] font-bold text-white hover:bg-blue-800 flex items-center gap-1.5 shadow-sm transition-all"
-                        >
-                          <FaPlus className="text-[9px]" />
-                          Add Manual
-                        </button>
-                      </div>
+                      {activeHandbook?.status !== 'published' && (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleGenerateKeywords}
+                            disabled={generatingKeywords}
+                            className="px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-[10px] font-bold text-blue-700 hover:bg-blue-50 flex items-center gap-1.5 shadow-sm transition-all"
+                          >
+                            {generatingKeywords ? <FaSpinner className="animate-spin" /> : <FaPlus className="text-[9px]" />}
+                            AI Generate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleAddManualKeyword}
+                            className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-[10px] font-bold text-white hover:bg-blue-800 flex items-center gap-1.5 shadow-sm transition-all"
+                          >
+                            <FaPlus className="text-[9px]" />
+                            Add Manual
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap gap-1.5 min-h-[40px] p-2 rounded-lg bg-white/50 border border-slate-100">
@@ -1193,13 +1430,15 @@ const Cms: React.FC = () => {
                       {currentKeywords.map((k) => (
                         <div key={k} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700 group hover:border-blue-300 transition-colors shadow-sm">
                           <span>{k}</span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveKeyword(k)}
-                            className="text-slate-300 hover:text-rose-500 transition-colors"
-                          >
-                            ×
-                          </button>
+                          {activeHandbook?.status !== 'published' && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveKeyword(k)}
+                              className="text-slate-300 hover:text-rose-500 transition-colors"
+                            >
+                              ×
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1212,8 +1451,8 @@ const Cms: React.FC = () => {
                       {collegeOffices.filter(o => o.level === 2).map((office) => {
                         const pos = office.slug as ApproverPosition
                         return (
-                          <label key={pos} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${sectionAssignments.includes(pos) ? 'border-blue-400 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}>
-                            <input type="checkbox" className="sr-only" checked={sectionAssignments.includes(pos)} onChange={() => handleAssignmentToggle(pos)} disabled={sectionMeta.current_level > 1} />
+                          <label key={pos} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors ${sectionAssignments.includes(pos) ? 'border-blue-400 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'} ${activeHandbook?.status === 'published' ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'}`}>
+                            <input type="checkbox" className="sr-only" checked={sectionAssignments.includes(pos)} disabled={activeHandbook?.status === 'published'} onChange={() => activeHandbook?.status !== 'published' && setPendingAssignmentToggle(pos)} />
                             {office.name}
                           </label>
                         )
@@ -1223,11 +1462,6 @@ const Cms: React.FC = () => {
 
                   {/* Legacy text + assign actions */}
                   <div className="flex items-center gap-2 flex-wrap">
-                    {sectionMeta.current_level === 1 && (
-                      <button type="button" onClick={handleSubmitSingleToL2} disabled={workflowSaving || sectionAssignments.length === 0} className="px-3 py-1.5 rounded-lg bg-blue-700 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-                        {workflowSaving ? 'Submitting…' : 'Submit for Review'}
-                      </button>
-                    )}
                     {sectionMeta.legacy_content && (
                       <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full ring-1 ring-emerald-200">Baseline sync confirmed</span>
                     )}
@@ -1304,7 +1538,82 @@ const Cms: React.FC = () => {
           )}
         </section>
       </main>
-    </div>
+
+      {/* Assignment confirmation modal */}
+      {pendingAssignmentToggle && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xl max-w-sm w-full animate-in fade-in zoom-in-95 duration-200">
+            <h3 className="text-sm font-bold text-slate-800 mb-2">Update Department Assignment?</h3>
+            <p className="text-xs text-slate-600 mb-6">Are you sure you want to change the department assignment for this section? This will immediately sync and notify the relevant department approvers.</p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingAssignmentToggle(null)}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-50 hover:bg-slate-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const pos = pendingAssignmentToggle
+                  setPendingAssignmentToggle(null)
+                  await handleAssignmentToggle(pos)
+                }}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-sm"
+              >
+                Confirm Update
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Generated Keywords review/download modal */}
+      {generatedKeywordsReview && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xl max-w-md w-full animate-in fade-in zoom-in-95 duration-200">
+            <h3 className="text-sm font-bold text-slate-800 mb-2">Review Suggested Keywords</h3>
+            <p className="text-xs text-slate-600 mb-4">Review the AI-generated keywords before saving. Accepting them will automatically download a keywords file.</p>
+            
+            <div className="flex flex-wrap gap-1.5 min-h-[60px] p-3 rounded-xl bg-slate-50 border border-slate-100 max-h-[140px] overflow-y-auto mb-6">
+              {generatedKeywordsReview.map((kw, i) => (
+                <span key={i} className="inline-flex items-center px-2 py-0.5 rounded bg-white border border-slate-200 text-xs text-slate-700">{kw}</span>
+              ))}
+            </div>
+
+            <div className="flex justify-between items-center">
+              <button
+                type="button"
+                onClick={async () => {
+                  setGeneratedKeywordsReview(null)
+                  await handleGenerateKeywords()
+                }}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 transition-colors"
+              >
+                Regenerate
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGeneratedKeywordsReview(null)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-50 hover:bg-slate-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={acceptGeneratedKeywords}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  Accept
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

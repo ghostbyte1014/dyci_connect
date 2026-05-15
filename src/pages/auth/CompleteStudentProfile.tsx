@@ -291,7 +291,7 @@ const CompleteStudentProfile: React.FC = () => {
                   <input
                     name="firstName" value={form.firstName} onChange={handleChange}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-[#1434A4] focus:ring-1 focus:ring-[#1434A4] outline-none transition-all text-sm"
-                    placeholder="Carlo" required
+                    placeholder="John Christian" required
                   />
                 </div>
                 <div className="space-y-1">
@@ -299,7 +299,7 @@ const CompleteStudentProfile: React.FC = () => {
                   <input
                     name="middleName" value={form.middleName} onChange={handleChange}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-[#1434A4] focus:ring-1 focus:ring-[#1434A4] outline-none transition-all text-sm"
-                    placeholder="Matamis"
+                    placeholder="Carpio"
                   />
                 </div>
                 <div className="space-y-1">
@@ -307,7 +307,7 @@ const CompleteStudentProfile: React.FC = () => {
                   <input
                     name="lastName" value={form.lastName} onChange={handleChange}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-[#1434A4] focus:ring-1 focus:ring-[#1434A4] outline-none transition-all text-sm"
-                    placeholder="Celestino" required
+                    placeholder="Gabriel" required
                   />
                 </div>
               </div>
@@ -321,7 +321,7 @@ const CompleteStudentProfile: React.FC = () => {
                   <input
                     name="idNumber" value={form.idNumber} onChange={handleChange}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-[#1434A4] focus:ring-1 focus:ring-[#1434A4] outline-none transition-all text-sm"
-                    placeholder="2023-02234" required
+                    placeholder="2022-00674" required
                   />
                 </div>
                 <div className="space-y-1">
@@ -329,7 +329,7 @@ const CompleteStudentProfile: React.FC = () => {
                   <input
                     name="nickname" value={form.nickname} onChange={handleChange}
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-[#1434A4] focus:ring-1 focus:ring-[#1434A4] outline-none transition-all text-sm"
-                    placeholder="Nickname"
+                    placeholder="Christian"
                   />
                 </div>
               </div>

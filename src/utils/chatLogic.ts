@@ -44,8 +44,18 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
   if (words.length === 0) return null;
 
   // 1. Get current academic year ID
-  const { data: ayId, error: ayError } = await supabase.rpc('get_current_academic_year_id');
-  if (ayError || !ayId) return null;
+  let ayId: string | null = null;
+  const { data: rpcAyId } = await supabase.rpc('get_current_academic_year_id');
+  if (rpcAyId) {
+    ayId = rpcAyId;
+  } else {
+    const { data: years } = await supabase.from('academic_years').select('id, is_current').order('year_name', { ascending: false });
+    if (years && years.length > 0) {
+      const current = years.find(y => y.is_current);
+      ayId = current ? current.id : years[0].id;
+    }
+  }
+  if (!ayId) return null;
 
   const matchedHandbookSections = new Map<string, any>(); // section_id -> section data
   const matchedCalendarEvents = new Map<string, any>(); // event_id -> event data
@@ -90,27 +100,33 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
       calendar_events!inner(*)
     `)
     .in('keyword', words)
-    .is('calendar_events.deleted_at', null)
-    .eq('calendar_events.academic_year_id', ayId);
+    .is('calendar_events.deleted_at', null);
 
   if (calData && calData.length > 0) {
-    // Verify Handbook visibility for the academic year
-    const { data: visibleHB } = await supabase
-      .from('handbooks')
-      .select('id')
-      .eq('academic_year_id', ayId)
-      .eq('status', 'published')
-      .limit(1);
+    calData.forEach((item: any) => {
+      const event = item.calendar_events;
+      const eventData = Array.isArray(event) ? event[0] : event;
+      if (eventData) {
+        matchedCalendarEvents.set(eventData.id, eventData);
+        if (!matchedKeywords.includes(item.keyword)) {
+          matchedKeywords.push(item.keyword);
+        }
+      }
+    });
+  }
 
-    if (visibleHB && visibleHB.length > 0) {
-      calData.forEach((item: any) => {
-        const event = item.calendar_events;
-        const eventData = Array.isArray(event) ? event[0] : event;
-        if (eventData) {
-          matchedCalendarEvents.set(eventData.id, eventData);
-          if (!matchedKeywords.includes(item.keyword)) {
-            matchedKeywords.push(item.keyword);
-          }
+  // 3b. Search by direct title match fallback
+  for (const word of words) {
+    const { data: titleData } = await supabase
+      .from('calendar_events')
+      .select('*')
+      .is('deleted_at', null)
+      .ilike('title', `%${word}%`);
+    if (titleData && titleData.length > 0) {
+      titleData.forEach((event: any) => {
+        matchedCalendarEvents.set(event.id, event);
+        if (!matchedKeywords.includes(word)) {
+          matchedKeywords.push(word);
         }
       });
     }
@@ -276,9 +292,18 @@ export const handleIncomingMessage = async (conversationId: string, content: str
     } else if (match.type === 'calendar') {
       const events = match.data as any[];
       sourceLabel = `Academic Calendar (${match.keywords.join(', ')})`;
-      combinedSourceData = events.map((e, idx) => 
-        `[${idx + 1}] ${e.title} - ${new Date(e.date).toLocaleDateString()} (${e.type})`
-      ).join('\n');
+      combinedSourceData = events.map((e, idx) => {
+        const parts = e.date.split('-');
+        let dateStr = e.date;
+        if (parts.length === 3) {
+          const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+          const m = parseInt(parts[1]) - 1;
+          if (m >= 0 && m < 12) {
+            dateStr = `${months[m]} ${parseInt(parts[2])}, ${parts[0]}`;
+          }
+        }
+        return `[${idx + 1}] ${e.title} - ${dateStr} (${e.type})`;
+      }).join('\n');
     }
 
     if (combinedSourceData) {

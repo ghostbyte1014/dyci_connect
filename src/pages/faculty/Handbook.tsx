@@ -150,7 +150,7 @@ const FacultyHandbook: React.FC = () => {
   const breadcrumbs = navStack.map((n) => n.title).join(' / ')
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-10">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Handbook</h1>
@@ -276,7 +276,7 @@ const FacultyHandbook: React.FC = () => {
           </div>
         )}
       </main>
-    </div>
+    </>
   )
 }
 

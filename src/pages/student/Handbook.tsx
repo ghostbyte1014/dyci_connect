@@ -166,7 +166,7 @@ const Handbook: React.FC = () => {
   if (loading) return <DashboardSkeleton />
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-10">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Student Handbook</h1>
@@ -297,7 +297,7 @@ const Handbook: React.FC = () => {
           </div>
         )}
       </main>
-    </div>
+    </>
   )
 }
 

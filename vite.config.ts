@@ -37,4 +37,8 @@ export default defineConfig({
     // Allow access via Cloudflare/ngrok tunnels and other hosts in dev
     allowedHosts: true,
   },
+  esbuild: {
+    // Automatically strip console.log and debugger statements in production build (Vercel)
+    drop: ['console', 'debugger'],
+  },
 })

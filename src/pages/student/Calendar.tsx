@@ -159,7 +159,7 @@ const StudentCalendar: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Academic Calendar</h1>
@@ -439,7 +439,7 @@ const StudentCalendar: React.FC = () => {
           </div>
         )}
       </main>
-    </div>
+    </>
   )
 }
 

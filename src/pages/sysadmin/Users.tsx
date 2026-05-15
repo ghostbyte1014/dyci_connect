@@ -559,7 +559,7 @@ const SysAdminUsers: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans tracking-tight">
+    <>
       {/* Institutional Header */}
       <header className="unified-header">
         <div className="unified-header-content flex items-center justify-between">
@@ -1358,7 +1358,7 @@ const SysAdminUsers: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

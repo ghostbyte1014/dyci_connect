@@ -11,7 +11,7 @@ import type { Grade, Todo } from '../../types'
 
 type ToolsTab = 'gwa' | 'todo'
 type TodoPriority = 'high' | 'standard' | 'low'
-type TodoStatus = 0 | 1 | 2 | 3 // 0: Backlog, 1: Active, 2: Review, 3: Done
+type TodoStatus = 0 | 1 | 2 | 3 // 0: Pending, 1: Active, 2: In-Progress, 3: Done
 
 interface GradeInput {
   subject: string;
@@ -37,9 +37,9 @@ interface ConfirmConfig {
 }
 
 const TOOLS_COLUMNS = [
-  { id: 0, label: 'Backlog' },
+  { id: 0, label: 'Pending' },
   { id: 1, label: 'Active' },
-  { id: 2, label: 'Review' },
+  { id: 2, label: 'In-Progress' },
   { id: 3, label: 'Done' }
 ]
 
@@ -355,7 +355,7 @@ const Tools: React.FC = () => {
   const moveNextConfirm = (todo: Todo) => {
     if (todo.status >= 3) return
     const nextStatus = (todo.status + 1) as TodoStatus
-    const nextLabel = nextStatus === 1 ? 'Active' : nextStatus === 2 ? 'Review' : 'Done'
+    const nextLabel = nextStatus === 1 ? 'Active' : nextStatus === 2 ? 'In-Progress' : 'Done'
     
     setConfirmConfig({
       isOpen: true,
@@ -458,14 +458,21 @@ const Tools: React.FC = () => {
     const todoToUpdate = todos.find(t => t.id === id)
     if (!todoToUpdate || todoToUpdate.status === newStatus) return
 
+    let nextProgress = todoToUpdate.progress
+    if (newStatus === 0) nextProgress = 0
+    else if (newStatus === 1) nextProgress = todoToUpdate.progress < 10 || todoToUpdate.progress === 100 ? 10 : todoToUpdate.progress
+    else if (newStatus === 2) nextProgress = todoToUpdate.progress < 80 || todoToUpdate.progress === 100 ? 80 : todoToUpdate.progress
+    else if (newStatus === 3) nextProgress = 100
+
     try {
       // Optimistic update
-      setTodos(prev => prev.map(t => t.id === id ? { ...t, status: newStatus } : t))
+      setTodos(prev => prev.map(t => t.id === id ? { ...t, status: newStatus, progress: nextProgress } : t))
       
       const { error } = await supabase
         .from('todos')
         .update({ 
           status: newStatus,
+          progress: nextProgress,
           updated_at: new Date().toISOString()
         })
         .eq('id', id)
@@ -573,7 +580,7 @@ const Tools: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
+    <>
       <header className="unified-header">
         <div className="unified-header-content flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
@@ -902,7 +909,15 @@ const Tools: React.FC = () => {
                   <KanbanSkeleton />
                 ) : (
                   TOOLS_COLUMNS.map(col => {
-                    const colTodos = filteredTodos.filter(t => t.status === col.id)
+                    const colTodos = filteredTodos
+                      .filter(t => t.status === col.id)
+                      .sort((a, b) => {
+                        const priorityWeights: Record<string, number> = { high: 3, standard: 2, medium: 2, low: 1 }
+                        const wA = priorityWeights[a.priority as string] || 2
+                        const wB = priorityWeights[b.priority as string] || 2
+                        if (wA !== wB) return wB - wA
+                        return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+                      })
                     return (
                       <div key={col.id} className="flex flex-col min-h-[500px]">
                         <div className="flex items-center justify-between mb-4 px-2">
@@ -1048,9 +1063,9 @@ const Tools: React.FC = () => {
                     onChange={e => setFormData({...formData, status: parseInt(e.target.value) as TodoStatus})}
                     className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all font-bold"
                   >
-                    <option value={0}>Backlog</option>
+                    <option value={0}>Pending</option>
                     <option value={1}>Active</option>
-                    <option value={2}>Review</option>
+                    <option value={2}>In-Progress</option>
                     <option value={3}>Done</option>
                   </select>
                 </div>
@@ -1147,7 +1162,7 @@ const Tools: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

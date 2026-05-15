@@ -363,7 +363,7 @@ const SysAdminStorage: React.FC = () => {
 
   // ─── Render ────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans tracking-tight">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Data Storage</h1>
@@ -761,7 +761,7 @@ const SysAdminStorage: React.FC = () => {
           <span>DYCI CONNECT v7.0</span>
         </div>
       </footer>
-    </div>
+    </>
   );
 };
 

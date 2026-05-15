@@ -16,7 +16,7 @@ const AuthOverrideGuard: React.FC<AuthOverrideGuardProps> = ({ children }) => {
 
   const checkOverrideStatus = async () => {
     // L90 (system_admin) bypasses auth overrides
-    if (authoritativeRole === 'system_admin' || window.location.pathname.startsWith('/sysadmin')) {
+    if (authoritativeRole === 'system_admin' || authoritativeRole === 'sysadmin' || window.location.pathname.startsWith('/sysadmin')) {
       setChecking(false);
       return;
     }

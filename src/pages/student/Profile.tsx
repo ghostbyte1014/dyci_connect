@@ -3,13 +3,14 @@ import toast from 'react-hot-toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { getAuthProvider } from '../../utils/profileUtils'
-import { FaEye, FaEyeSlash, FaFingerprint, FaUserCircle, FaEdit, FaCamera, FaSave, FaTimes, FaMapMarkerAlt, FaSchool, FaIdCard, FaBriefcase } from 'react-icons/fa'
+import { FaEye, FaEyeSlash, FaFingerprint, FaUserCircle, FaEdit, FaCamera, FaSave, FaTimes, FaMapMarkerAlt, FaSchool, FaIdCard, FaBriefcase, FaLaptopCode, FaTrash } from 'react-icons/fa'
 import { DashboardSkeleton } from '../../components/ui/Skeleton'
 import PasswordStrengthIndicator from '../../components/auth/PasswordStrengthIndicator'
 
 const StudentProfile: React.FC = () => {
   const { user, authoritativeRole, updatePassword } = useAuth()
   const [profile, setProfile] = useState<any | null>(null)
+  const [devices, setDevices] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
@@ -112,8 +113,68 @@ const StudentProfile: React.FC = () => {
       setLoading(false)
     }
 
+    const fetchDevices = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('trusted_devices')
+          .select('*')
+          .eq('user_id', user?.id)
+          .order('is_active', { ascending: false })
+          .order('last_used_at', { ascending: false });
+        if (error) throw error;
+        setDevices(data || []);
+      } catch (err) {
+        console.error('Failed to fetch trusted devices', err);
+      }
+    };
+
     loadProfile()
+    if (user?.id) fetchDevices()
   }, [user?.id])
+
+  const handleRevokeDevice = async (deviceId: string) => {
+    try {
+      const { error } = await supabase
+        .from('trusted_devices')
+        .update({ is_active: false })
+        .eq('id', deviceId);
+      
+      if (error) throw error;
+      toast.success('Device revoked successfully');
+      
+      const { data } = await supabase
+        .from('trusted_devices')
+        .select('*')
+        .eq('user_id', user?.id)
+        .order('is_active', { ascending: false })
+        .order('last_used_at', { ascending: false });
+      setDevices(data || []);
+    } catch (err) {
+      toast.error('Failed to revoke device');
+    }
+  };
+
+  const handleRestoreDevice = async (deviceId: string) => {
+    try {
+      const { error } = await supabase
+        .from('trusted_devices')
+        .update({ is_active: true })
+        .eq('id', deviceId);
+      
+      if (error) throw error;
+      toast.success('Device restored successfully');
+      
+      const { data } = await supabase
+        .from('trusted_devices')
+        .select('*')
+        .eq('user_id', user?.id)
+        .order('is_active', { ascending: false })
+        .order('last_used_at', { ascending: false });
+      setDevices(data || []);
+    } catch (err) {
+      toast.error('Failed to restore device');
+    }
+  };
 
   // Load PSGC regions once
   useEffect(() => {
@@ -744,6 +805,59 @@ const StudentProfile: React.FC = () => {
             </div>
           </section>
         )}
+
+        {/* Security & Trusted Devices Section */}
+        <section className="rounded-2xl border border-slate-100 bg-white px-6 py-5 space-y-4 shadow-sm mt-6">
+          <h2 className="text-xs font-semibold text-slate-800 flex items-center">
+            <FaFingerprint className="mr-2 text-[#1434A4]" /> Security & Trusted Devices
+          </h2>
+          <p className="text-[11px] text-slate-500 mb-4">
+            Manage the devices that have access to your account without needing an email verification code.
+          </p>
+          
+          {devices.length === 0 ? (
+            <div className="text-center py-6 text-xs text-slate-400">
+              No trusted devices found.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {devices.map((device) => (
+                <div key={device.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-xl gap-3">
+                  <div className="flex items-center space-x-4">
+                    <div className={`p-2.5 rounded-full shrink-0 ${device.is_active ? 'bg-blue-100 text-[#1434A4]' : 'bg-gray-100 text-gray-400'}`}>
+                      <FaLaptopCode className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-semibold truncate ${device.is_active ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
+                        {device.device_name || 'Unknown Device'}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                        Last used: {new Date(device.last_used_at).toLocaleDateString()} {new Date(device.last_used_at).toLocaleTimeString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    {device.is_active ? (
+                      <button
+                        onClick={() => handleRevokeDevice(device.id)}
+                        className="text-[10px] text-rose-600 hover:text-rose-700 font-semibold px-3 py-1.5 bg-rose-50 hover:bg-rose-100 rounded-lg transition-colors flex items-center whitespace-nowrap"
+                      >
+                        <FaTrash className="mr-1.5 h-2.5 w-2.5" /> Revoke
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRestoreDevice(device.id)}
+                        className="text-[10px] text-emerald-600 hover:text-emerald-700 font-semibold px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors flex items-center whitespace-nowrap"
+                      >
+                        Undo / Restore
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         {loading && (
           <p className="text-[11px] text-slate-500">Loading your profile…</p>

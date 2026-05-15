@@ -20,18 +20,7 @@ const ForgotPassword: React.FC = () => {
     }
     setLoading(true)
     try {
-      if (isSupabaseConfigured) {
-        const { data: authProvider } = await supabase.rpc('get_auth_provider_for_email', {
-          em: email.trim(),
-        })
-        if (authProvider === 'google') {
-          toast.error(
-            'This account uses Google sign-in. Password reset is not available. Change your password from your Google Account settings.'
-          )
-          setLoading(false)
-          return
-        }
-      }
+      // Standard password reset execution
 
       const { error } = await resetPassword(email.trim())
       if (error) {

@@ -147,8 +147,7 @@ const HandbookApprovals: React.FC = () => {
 
       const { data: allHandbooks } = await fetchHandbooks()
       const filteredHandbooks = (allHandbooks ?? []).filter(h =>
-        (!activeYearId || h.academic_year_id === activeYearId) &&
-        h.status !== 'published'
+        !activeYearId || h.academic_year_id === activeYearId
       )
 
       setHandbooks(filteredHandbooks)
@@ -208,14 +207,18 @@ const HandbookApprovals: React.FC = () => {
       for (const row of raw as any[]) {
         const rawSec = (row as any).handbook_sections
         const sec = Array.isArray(rawSec) ? rawSec[0] : rawSec
-        if (!sec || sec.current_level !== 2) continue
+        if (!sec) continue
+        const hasApproved = approvedIds.has(sec.id)
+        if (!hasApproved && sec.current_level !== 2) continue
         const kws = (sec.handbook_keywords || []).map((k: any) => k.keyword)
         items.push({ ...sec, keywords: kws } as SectionItem)
       }
     } else {
       for (const row of raw as any[]) {
         const sec = (row as any).handbook_sections
-        if (!sec || sec.current_level !== lvl) continue
+        if (!sec) continue
+        const hasApproved = approvedIds.has(sec.id)
+        if (!hasApproved && sec.current_level !== lvl) continue
         const kws = (sec.handbook_keywords || []).map((k: any) => k.keyword)
         items.push({ ...sec, keywords: kws } as SectionItem)
       }
@@ -279,7 +282,21 @@ const HandbookApprovals: React.FC = () => {
     }
     for (const hid of Object.keys(map)) map[hid].sort((a, b) => a.sort_order - b.sort_order)
 
-    return handbooks.filter((h) => map[h.id] && map[h.id].length > 0)
+    const result = handbooks.filter((h) => map[h.id] && map[h.id].length > 0)
+    for (const hid of Object.keys(map)) {
+      if (!result.some((h) => h.id === hid)) {
+        result.push({
+          id: hid,
+          title: 'Institutional Handbook',
+          academic_year_id: '',
+          status: 'draft',
+          created_at: '',
+          updated_at: '',
+          publish_at: null,
+        } as any)
+      }
+    }
+    return result
   }, [handbooks, activeTab, pendingSections, approvedSections])
 
   const openHandbook = (handbook: Handbook) => {
@@ -422,7 +439,7 @@ const HandbookApprovals: React.FC = () => {
     const handbookFullyApproved = Object.values(handbookApprovals).some(a => a.approved)
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
+      <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Approval Monitor</h1>
@@ -463,35 +480,43 @@ const HandbookApprovals: React.FC = () => {
           </div>
 
           {/* Approve Handbook Button */}
-          {handbooks.length > 0 && !handbookFullyApproved && (
+          {handbooks.length > 0 && (
             <div className="mb-6 bg-white rounded-2xl border border-slate-200 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-slate-900">{handbooks[0].title}</h3>
                   <p className="text-sm text-slate-500 mt-1">
-                    {allSectionsFullyApproved
+                    {handbooks[0].status === 'published'
+                      ? 'This handbook is already published.'
+                      : allSectionsFullyApproved
                       ? 'All sections are approved. Ready for executive approval.'
                       : `${pendingCount} sections still pending department review.`}
                   </p>
                 </div>
-                <button
-                  onClick={handleApproveHandbook}
-                  disabled={!allSectionsFullyApproved || handbookApproving}
-                  className={`px-6 py-3 rounded-lg font-semibold text-sm transition-all ${allSectionsFullyApproved
-                      ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
-                      : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                    }`}
-                >
-                  {handbookApproving ? (
-                    <span className="flex items-center gap-2"><FaSpinner className="animate-spin" /> Approving...</span>
-                  ) : hasApprovedHandbook ? (
-                    'Already Approved'
-                  ) : (
-                    'Approve Handbook'
-                  )}
-                </button>
+                {handbooks[0].status === 'published' ? (
+                  <span className="px-4 py-2 rounded-lg font-bold text-sm bg-emerald-100 text-emerald-700 select-none">
+                    Published
+                  </span>
+                ) : (
+                  <button
+                    onClick={handleApproveHandbook}
+                    disabled={!allSectionsFullyApproved || handbookApproving}
+                    className={`px-6 py-3 rounded-lg font-semibold text-sm transition-all ${allSectionsFullyApproved
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                      }`}
+                  >
+                    {handbookApproving ? (
+                      <span className="flex items-center gap-2"><FaSpinner className="animate-spin" /> Approving...</span>
+                    ) : hasApprovedHandbook ? (
+                      'Already Approved'
+                    ) : (
+                      'Approve Handbook'
+                    )}
+                  </button>
+                )}
               </div>
-              {!allSectionsFullyApproved && (
+              {!allSectionsFullyApproved && handbooks[0].status !== 'published' && (
                 <p className="mt-3 text-xs text-amber-600 bg-amber-50 p-2 rounded-lg">
                   ⚠️ All sections must be fully approved by all required departments before you can approve this handbook.
                 </p>
@@ -661,7 +686,7 @@ const HandbookApprovals: React.FC = () => {
             </div>
           )}
         </main>
-      </div>
+      </>
     )
   }
 
@@ -671,7 +696,7 @@ const HandbookApprovals: React.FC = () => {
     const sMap = sectionsByHandbook()
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col">
+      <>
         {/* Header */}
       <header className="unified-header">
         <div className="unified-header-content">
@@ -762,7 +787,7 @@ const HandbookApprovals: React.FC = () => {
             })}
           </div>
         </main>
-      </div>
+      </>
     )
   }
 
@@ -776,7 +801,7 @@ const HandbookApprovals: React.FC = () => {
   const currentSections = handbookSections.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE)
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <>
       <header className="unified-header">
         <div className="unified-header-content flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -892,7 +917,7 @@ const HandbookApprovals: React.FC = () => {
           </div>
         )}
       </main>
-    </div>
+    </>
   )
 }
 
@@ -1053,7 +1078,6 @@ const SectionCard: React.FC<SectionCardProps> = ({
           )}
         </div>
       )}
-
     </div>
   )
 }

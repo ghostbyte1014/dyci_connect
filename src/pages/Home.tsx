@@ -10,7 +10,7 @@ const Home: React.FC = () => {
   React.useEffect(() => {
     if (user && authoritativeRole) {
       const role = authoritativeRole.toLowerCase()
-      if (role === 'sysadmin') navigate('/sysadmin/dashboard')
+      if (role === 'sysadmin' || role === 'system_admin') navigate('/sysadmin/dashboard')
       else if (role === 'academic_admin') navigate('/admin/dashboard')
       else if (role === 'staff' || role === 'faculty') navigate('/staff/dashboard')
       else if (role === 'student') navigate('/student/dashboard')

@@ -5,6 +5,7 @@ import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { checkProfileCompleteness, createIncompleteProfileNotification } from '../../utils/profileUtils'
 import toast from 'react-hot-toast'
 import { FaEnvelope, FaLock, FaArrowLeft, FaEye, FaEyeSlash } from 'react-icons/fa'
+import OtpInput from '../../components/auth/OtpInput'
 const logo = '/icons/icon-512x512.png'
 
 const Login: React.FC = () => {
@@ -12,61 +13,86 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState<string>('')
   const [showPassword, setShowPassword] = useState<boolean>(false)
   const [loading, setLoading] = useState<boolean>(false)
-  const { signIn } = useAuth()
+  const [requiresOtp, setRequiresOtp] = useState<boolean>(false)
+  const [hwid, setHwid] = useState<string>('')
+  const { signIn, verifyDeviceOtp } = useAuth()
   const navigate = useNavigate()
+
+  const handleSuccessfulLogin = async (user: any) => {
+    toast.success('Login successful!')
+
+    let role = (user?.user_metadata?.role as string | undefined)?.toLowerCase()
+
+    // Fallback: if metadata role is missing, read from profiles table
+    if (!role && isSupabaseConfigured && user?.id) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, role, first_name, last_name')
+        .eq('id', user.id)
+        .maybeSingle()
+      role = (profile?.role as string | undefined)?.toLowerCase()
+      const completeness = checkProfileCompleteness(profile)
+      if (!profile || !completeness.isComplete) {
+        await createIncompleteProfileNotification(user.id)
+      }
+    } else if (isSupabaseConfigured && user?.id) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, role, first_name, last_name')
+        .eq('id', user.id)
+        .maybeSingle()
+      const completeness = checkProfileCompleteness(profile)
+      if (!profile || !completeness.isComplete) {
+        await createIncompleteProfileNotification(user.id)
+      }
+    }
+
+    if (role === 'system_admin' || role === 'sysadmin') {
+      navigate('/sysadmin/dashboard')
+    } else if (role === 'academic_admin') {
+      navigate('/admin/dashboard')
+    } else if (role === 'staff' || role === 'faculty') {
+      navigate('/staff/dashboard')
+    } else if (role === 'student') {
+      navigate('/student/dashboard')
+    } else {
+      toast.error('Your account has no role assigned. Please contact the administrator.')
+      navigate('/')
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
     try {
-      const { data, error } = await signIn(email, password)
+      const { data, error, requires_otp, hwid: returnedHwid } = await signIn(email, password)
       if (error) throw error
 
-      toast.success('Login successful!')
-
-      const user = (data as any)?.user as any
-      let role = (user?.user_metadata?.role as string | undefined)?.toLowerCase()
-
-      // Fallback: if metadata role is missing, read from profiles table
-      if (!role && isSupabaseConfigured && user?.id) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('id, role, first_name, last_name')
-          .eq('id', user.id)
-          .maybeSingle()
-        role = (profile?.role as string | undefined)?.toLowerCase()
-        const completeness = checkProfileCompleteness(profile)
-        if (!profile || !completeness.isComplete) {
-          await createIncompleteProfileNotification(user.id)
-        }
-      } else if (isSupabaseConfigured && user?.id) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('id, role, first_name, last_name')
-          .eq('id', user.id)
-          .maybeSingle()
-        const completeness = checkProfileCompleteness(profile)
-        if (!profile || !completeness.isComplete) {
-          await createIncompleteProfileNotification(user.id)
-        }
+      if (requires_otp) {
+        setRequiresOtp(true)
+        if (returnedHwid) setHwid(returnedHwid)
+        toast.success('Verification code sent to your email.')
+        setLoading(false)
+        return
       }
 
-      if (role === 'system_admin' || role === 'sysadmin') {
-        navigate('/sysadmin/dashboard')
-      } else if (role === 'academic_admin') {
-        navigate('/admin/dashboard')
-      } else if (role === 'staff' || role === 'faculty') {
-        navigate('/staff/dashboard')
-      } else if (role === 'student') {
-        navigate('/student/dashboard')
-      } else {
-        toast.error('Your account has no role assigned. Please contact the administrator.')
-        navigate('/')
-      }
+      await handleSuccessfulLogin((data as any)?.user)
     } catch (error: any) {
-      toast.error('Authentication failed. Please check your credentials or network connection.');
-    } finally {
+      toast.error(error.message || 'Authentication failed. Please check your credentials.');
+      setLoading(false)
+    }
+  }
+
+  const handleOtpSubmit = async (code: string, rememberDevice: boolean) => {
+    setLoading(true)
+    try {
+      const { data, error } = await verifyDeviceOtp(email, code, hwid, rememberDevice)
+      if (error) throw error
+      
+      await handleSuccessfulLogin((data as any)?.user)
+    } catch (error: any) {
+      toast.error(error.message || 'Invalid or expired verification code.')
       setLoading(false)
     }
   }
@@ -89,8 +115,19 @@ const Login: React.FC = () => {
             </button>
 
 
-            {/* Email/password form */}
-            <form className="space-y-5" onSubmit={handleSubmit}>
+            {/* Email/password form or OTP */}
+            {requiresOtp ? (
+              <OtpInput 
+                email={email}
+                isLoading={loading}
+                onSubmit={handleOtpSubmit}
+                onCancel={() => {
+                  setRequiresOtp(false)
+                  setPassword('')
+                }}
+              />
+            ) : (
+              <form className="space-y-5" onSubmit={handleSubmit}>
               <div className="space-y-1">
                 <label
                   htmlFor="email"
@@ -168,6 +205,7 @@ const Login: React.FC = () => {
                 {loading ? 'Signing in...' : 'Sign in'}
               </button>
             </form>
+            )}
 
           </div>
         </div>

@@ -79,7 +79,12 @@ const ProfileGuard: React.FC<ProfileGuardProps> = ({ children, allowedRoles }) =
   }
 
   // Simplified strict role checking
-  const isRoleAllowed = allowedRoles.includes(role);
+  let isRoleAllowed = allowedRoles.includes(role);
+  if (role === 'system_admin' || role === 'sysadmin') {
+    if (allowedRoles.includes('system_admin') || allowedRoles.includes('sysadmin')) {
+      isRoleAllowed = true;
+    }
+  }
 
   const isStudent = role === 'student';
   const isStaff = ['staff', 'faculty', 'academic_admin'].includes(role);

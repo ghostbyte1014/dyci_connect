@@ -162,12 +162,12 @@ const SysAdminSettings: React.FC = () => {
     try {
       setMetricsLoading(true);
 
-      // Fetch health metrics
+      // Fetch health metrics via RPC (Bypasses RLS)
       const { data: healthData, error: healthError } = await supabase
         .rpc('get_infrastructure_health');
 
       if (!healthError && healthData) {
-        setHealthMetrics(healthData);
+        setHealthMetrics(healthData as InfrastructureHealth);
       }
 
       // Fetch database size
@@ -366,12 +366,11 @@ const SysAdminSettings: React.FC = () => {
       { label: 'SSL ENCRYPTION', active: healthMetrics?.ssl_enabled ?? true },
       { label: 'HWID AUTHENTICATION', active: healthMetrics?.hwid_auth_enabled ?? false },
       { label: 'RLS ENFORCEMENT', active: allTablesEnforced || (healthMetrics?.rls_enforced ?? true) },
-      { label: 'IP WHITELISTING', active: healthMetrics?.ip_whitelist_enabled ?? false },
     ];
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans tracking-tight">
+    <>
       {/* Standard Legacy Header Bar */}
       <header className="unified-header">
         <div className="unified-header-content flex items-center justify-between">
@@ -638,7 +637,7 @@ const SysAdminSettings: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

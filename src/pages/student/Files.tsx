@@ -372,7 +372,7 @@ const Files: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Cloud Storage</h1>
@@ -757,7 +757,7 @@ const Files: React.FC = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

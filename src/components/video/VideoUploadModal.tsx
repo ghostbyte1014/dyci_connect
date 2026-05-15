@@ -79,7 +79,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
         }
 
         setIsUploading(true);
-        const toastId = toast.loading('Establishing R2 Uplink & Transmitting Block Data...');
+        const toastId = toast.loading('Uploading your video, please wait...');
 
         try {
             // 1. Send the physical bits to R2
@@ -95,11 +95,11 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
                     console.log('Thumbnail uploaded to:', thumbUrl);
                 } else if (thumbError) {
                     console.error('Thumbnail upload error:', thumbError);
-                    toast.error('Cover card transmission failed. Video upload is still in progress.');
+                    toast.error('Thumbnail upload failed. The video upload is still continuing.');
                 }
             }
 
-            toast.loading('Transmission complete. Saving schema metadata...', { id: toastId });
+            toast.loading('Upload complete. Saving video details...', { id: toastId });
 
             // 2. Commit the SQL record
             const { error: dbError } = await createVideoMetadata({
@@ -116,7 +116,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
 
             if (dbError) throw dbError;
 
-            toast.success('Video broadcast successfully injected into architecture!', { id: toastId });
+            toast.success('Video published successfully!', { id: toastId });
             onSuccess();
             onClose();
             setFile(null);
@@ -125,7 +125,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
             setDuration('');
         } catch (err: any) {
             console.error(err);
-            toast.error('Transmission failed. Network uplink disrupted.', { id: toastId });
+            toast.error('Upload failed. Please check your connection and try again.', { id: toastId });
         } finally {
             setIsUploading(false);
         }
@@ -141,8 +141,8 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
                             <FaFilm className="text-dyci-blue" />
                         </div>
                         <div>
-                            <h2 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Transmit Video Link</h2>
-                            <p className="text-[10px] text-slate-400 font-medium">Direct injection to R2 Pipeline</p>
+                            <h2 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Upload Video</h2>
+                            <p className="text-[10px] text-slate-400 font-medium">Share a video to the broadcast network</p>
                         </div>
                     </div>
                     <button onClick={onClose} className="p-2 text-slate-400 hover:text-rose-500 transition-colors">
@@ -154,7 +154,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
 
                     {/* File Picker */}
                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Video File Payload</label>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Select Video File</label>
                         <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-slate-300 border-dashed rounded-xl hover:border-dyci-blue hover:bg-blue-50/50 transition-all cursor-pointer relative">
                             <div className="space-y-1 text-center">
                                 <FaUpload className="mx-auto h-8 w-8 text-slate-400" />
@@ -224,7 +224,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
                                     ) : (
                                         <div className="h-full flex flex-col items-center justify-center text-slate-300">
                                             <FaFilm className="text-2xl mb-1" />
-                                            <span className="text-[9px] font-bold uppercase tracking-tighter">No Video Payload</span>
+                                            <span className="text-[9px] font-bold uppercase tracking-tighter">No Video Selected</span>
                                         </div>
                                     )}
                                 </div>
@@ -254,7 +254,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
                         </div>
 
                         <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Target Network Node</label>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Audience</label>
                             <select value={targetRole} onChange={(e) => setTargetRole(e.target.value as VideoTargetRole)}
                                 className="w-full text-sm px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:border-dyci-blue focus:ring-1 focus:ring-dyci-blue">
                                 <option value="ALL">ALL (Global Broadcast)</option>
@@ -283,7 +283,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({ isOpen, onCl
                 ${(isUploading || !file || !title) ? 'bg-slate-300 cursor-not-allowed shadow-none' : 'bg-dyci-blue hover:bg-blue-800 shadow-blue-500/20 active:scale-[0.98]'}`}
                         >
                             {isUploading ? <FaSpinner className="animate-spin text-lg" /> : <FaUpload className="text-sm" />}
-                            <span>{isUploading ? 'Transmitting to Cloudflare Edge...' : 'Execute Universal Upload'}</span>
+                            <span>{isUploading ? 'Uploading...' : 'Publish Video'}</span>
                         </button>
                     </div>
                 </form>

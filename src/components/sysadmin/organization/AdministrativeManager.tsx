@@ -27,10 +27,33 @@ const AdministrativeManager: React.FC = () => {
       setLoading(true);
       const { data, error } = await supabase
         .from('college_offices')
-        .select('*')
-        .order('level', { ascending: true })
-        .order('name', { ascending: true });
-      setOffices(data || []);
+        .select('*');
+      console.log('--- DIAGNOSIS: Fetching offices ---', { data, error });
+
+      // If sort_order or level sorting fails because of missing columns, we can see it here
+      const sortedData = data ? [...data].sort((a, b) => (a.level || 0) - (b.level || 0) || (a.name || '').localeCompare(b.name || '')) : [];
+
+      if (!error && (!data || data.length === 0)) {
+        const defaults = [
+          { name: 'Scholarship', slug: 'scholarship', level: 2, is_active: true },
+          { name: 'Department of Finance', slug: 'finance', level: 2, is_active: true },
+          { name: 'Office of the Registrar', slug: 'registrar', level: 2, is_active: true },
+          { name: 'Guidance Office', slug: 'guidance', level: 2, is_active: true },
+          { name: 'Property/Security Office', slug: 'property_security', level: 2, is_active: true },
+          { name: 'Academic Council', slug: 'academic_council', level: 3, is_active: true },
+          { name: 'Office of the President', slug: 'president', level: 3, is_active: true },
+          { name: 'Office of the Vice President', slug: 'vice_president', level: 3, is_active: true },
+        ];
+        await supabase.from('college_offices').insert(defaults);
+        const { data: refetched } = await supabase
+          .from('college_offices')
+          .select('*')
+          .order('level', { ascending: true })
+          .order('name', { ascending: true });
+        setOffices(refetched || []);
+      } else {
+        setOffices(data || []);
+      }
     } catch (err: any) {
       console.error(err);
       toast.error('Failed to load administrative office registry.');

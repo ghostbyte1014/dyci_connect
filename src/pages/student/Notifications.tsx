@@ -108,7 +108,7 @@ const Notifications: React.FC = () => {
   const unreadCount = notifications.filter((n) => !n.read).length
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <>
       <header className="unified-header">
         <div className="unified-header-content">
           <h1 className="unified-header-title">Notifications</h1>
@@ -238,7 +238,7 @@ const Notifications: React.FC = () => {
           </div>
         )}
       </main>
-    </div>
+    </>
   )
 }
 

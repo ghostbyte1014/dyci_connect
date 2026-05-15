@@ -3,7 +3,9 @@ import {
   FaFingerprint,
   FaUserCircle,
   FaEye,
-  FaEyeSlash
+  FaEyeSlash,
+  FaLaptopCode,
+  FaTrash
 } from 'react-icons/fa';
 import { DashboardSkeleton } from '../../components/ui/Skeleton';
 import { supabase } from '../../lib/supabaseClient';
@@ -14,6 +16,7 @@ import PasswordStrengthIndicator from '../../components/auth/PasswordStrengthInd
 const SysAdminProfile: React.FC = () => {
   const { user, updatePassword } = useAuth();
   const [profile, setProfile] = useState<any>(null);
+  const [devices, setDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -44,8 +47,56 @@ const SysAdminProfile: React.FC = () => {
   });
 
   useEffect(() => {
-    if (user) fetchProfile();
+    if (user) {
+      fetchProfile();
+      fetchDevices();
+    }
   }, [user]);
+
+  const fetchDevices = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('trusted_devices')
+        .select('*')
+        .eq('user_id', user?.id)
+        .order('is_active', { ascending: false })
+        .order('last_used_at', { ascending: false });
+      if (error) throw error;
+      setDevices(data || []);
+    } catch (err) {
+      console.error('Failed to fetch trusted devices', err);
+    }
+  };
+
+  const handleRevokeDevice = async (deviceId: string) => {
+    try {
+      const { error } = await supabase
+        .from('trusted_devices')
+        .update({ is_active: false })
+        .eq('id', deviceId);
+      
+      if (error) throw error;
+      toast.success('Device revoked successfully');
+      fetchDevices();
+    } catch (err) {
+      toast.error('Failed to revoke device');
+    }
+  };
+
+  const handleRestoreDevice = async (deviceId: string) => {
+    try {
+      const { error } = await supabase
+        .from('trusted_devices')
+        .update({ is_active: true })
+        .eq('id', deviceId);
+      
+      if (error) throw error;
+      toast.success('Device restored successfully');
+      fetchDevices();
+    } catch (err) {
+      toast.error('Failed to restore device');
+    }
+  };
 
   const fetchProfile = async () => {
     try {
@@ -289,6 +340,59 @@ const SysAdminProfile: React.FC = () => {
             </div>
           </section>
         </div>
+
+        {/* Security & Trusted Devices Section */}
+        <section className="mt-6 lg:mt-8">
+          <div className="legacy-card p-6 sm:p-8">
+            <h3 className="text-sm font-bold text-slate-800 mb-2 font-sans flex items-center">
+              <FaFingerprint className="mr-2 text-blue-600" /> Security & Trusted Devices
+            </h3>
+            <p className="text-xs text-slate-500 mb-6">
+              Manage the devices that have access to your account without needing an email verification code.
+            </p>
+            
+            {devices.length === 0 ? (
+              <div className="text-center py-6 text-xs text-slate-400">
+                No trusted devices found.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {devices.map((device) => (
+                  <div key={device.id} className="flex items-center justify-between p-4 bg-slate-50 border border-slate-100 rounded-xl">
+                    <div className="flex items-center space-x-4">
+                      <div className={`p-3 rounded-full ${device.is_active ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'}`}>
+                        <FaLaptopCode className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <p className={`text-xs font-semibold ${device.is_active ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
+                          {device.device_name || 'Unknown Device'}
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          Last used: {new Date(device.last_used_at).toLocaleDateString()} {new Date(device.last_used_at).toLocaleTimeString()}
+                        </p>
+                      </div>
+                    </div>
+                    {device.is_active ? (
+                      <button
+                        onClick={() => handleRevokeDevice(device.id)}
+                        className="text-xs text-red-600 hover:text-red-700 font-medium px-3 py-1.5 bg-red-50 hover:bg-red-100 rounded-lg transition-colors flex items-center"
+                      >
+                        <FaTrash className="mr-1.5 h-3 w-3" /> Revoke
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRestoreDevice(device.id)}
+                        className="text-xs text-emerald-600 hover:text-emerald-700 font-medium px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors flex items-center"
+                      >
+                        Undo / Restore
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
 
         {/* Edit profile modal */}
         {editOpen && (

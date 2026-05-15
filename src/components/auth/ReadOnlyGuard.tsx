@@ -14,7 +14,7 @@ const ReadOnlyGuard: React.FC<ReadOnlyGuardProps> = ({ children }) => {
 
   useEffect(() => {
     // L90 (system_admin) bypasses read-only banner
-    if (authoritativeRole === 'system_admin' || window.location.pathname.startsWith('/sysadmin')) {
+    if (authoritativeRole === 'system_admin' || authoritativeRole === 'sysadmin' || window.location.pathname.startsWith('/sysadmin')) {
       setIsReadOnly(false);
       return;
     }
@@ -48,7 +48,7 @@ const ReadOnlyGuard: React.FC<ReadOnlyGuardProps> = ({ children }) => {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [authoritativeRole]);
 
   const checkReadOnlyStatus = async () => {
     try {

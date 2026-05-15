@@ -43,7 +43,8 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
   const userRoleTitle = formatRole(authoritativeRole || '', {
     position: user?.user_metadata?.approver_position || user?.user_metadata?.department
   })
-  const consoleTitle = authoritativeRole === 'system_admin' ? 'System Admin Portal' : 'Academic Admin Portal'
+  const isSysAdmin = authoritativeRole === 'system_admin' || authoritativeRole === 'sysadmin'
+  const consoleTitle = isSysAdmin ? 'System Admin Portal' : 'Academic Admin Portal'
 
   React.useEffect(() => {
     const loadVerification = async () => {
@@ -106,7 +107,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
     { label: 'My Profile', icon: FaUserCircle, path: '/admin/profile' },
   ]
 
-  const navItems = authoritativeRole === 'system_admin' ? systemNavItems : academicNavItems
+  const navItems = isSysAdmin ? systemNavItems : academicNavItems
 
   const handleSignOut = async () => {
     await signOut()
@@ -222,7 +223,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
                     DYCI CONNECT
                   </span>
                   <span className="text-[10px] text-slate-400">
-                    {authoritativeRole === 'system_admin' ? 'Institutional Control' : 'Academic Console'}
+                    {isSysAdmin ? 'Institutional Control' : 'Academic Console'}
                   </span>
                 </div>
               </Link>

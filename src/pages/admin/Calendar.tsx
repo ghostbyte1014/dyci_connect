@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import toast from 'react-hot-toast'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../contexts/AuthContext'
+import { generateKeywords } from '../../utils/chatLogic'
 import {
   setAcademicYearAsCurrent,
   fetchAcademicYears,
@@ -19,6 +20,7 @@ interface CalendarEvent {
   description?: string
   academic_year_id: string
   deleted_at?: string | null
+  calendar_event_keywords?: { keyword: string }[]
 }
 
 const eventBadgeClasses: Record<EventType, string> = {
@@ -52,14 +54,50 @@ const monthOptions = [
   'December',
 ]
 
+const logForensicActivity = async (
+  action: 'INSERT' | 'UPDATE' | 'DELETE',
+  tableName: string,
+  recordId: string,
+  oldData?: any,
+  newData?: any
+) => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.user) return
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single()
+
+    const role = profile?.role || 'system'
+
+    await supabase.from('audit_logs').insert({
+      actor_id: session.user.id,
+      actor_role: role,
+      action,
+      table_name: tableName,
+      record_id: recordId,
+      old_data: oldData || null,
+      new_data: newData || null,
+      ip_address: 'client-side',
+      user_agent: navigator.userAgent || 'web-client',
+    })
+  } catch (err) {
+    console.error('Error logging forensics activity:', err)
+  }
+}
+
 const Calendar: React.FC = () => {
   const { user } = useAuth()
   // STATES
   const [currentYear, setCurrentYear] = useState(2025)
   const [currentMonth, setCurrentMonth] = useState(6) // July = 6
   const [selectedDate, setSelectedDate] = useState<string>('2025-07-01')
-  const [selectedDates, setSelectedDates] = useState<string[]>(['2025-07-01'])
+  const [selectedDates, setSelectedDates] = useState<string[]>([])
   const [isTargetRunnerOpen, setIsTargetRunnerOpen] = useState(false)
+  const [isRunConfirmOpen, setIsRunConfirmOpen] = useState(false)
   const [eventTargetMode, setEventTargetMode] = useState<'multiple' | 'range'>(
     'multiple'
   )
@@ -73,7 +111,7 @@ const Calendar: React.FC = () => {
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([])
   const [selectedYearId, setSelectedYearId] = useState<string>('')
   const [isYearModalOpen, setIsYearModalOpen] = useState(false)
-  const [newYearName, setNewYearName] = useState('')
+  const [newStartYear, setNewStartYear] = useState<number | string>('')
   const [isCreatingYear, setIsCreatingYear] = useState(false)
 
   // GLOBAL SETTINGS
@@ -82,6 +120,71 @@ const Calendar: React.FC = () => {
   const [showArchived, setShowArchived] = useState(false)
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [showAddConfirmModal, setShowAddConfirmModal] = useState(false)
+
+  const nextAcademicYearName = useMemo(() => {
+    if (academicYears.length === 0) return '2025-2026'
+    let maxStartYear = 0
+    academicYears.forEach(y => {
+      const parts = y.year_name.split('-')
+      if (parts.length === 2) {
+        const sy = parseInt(parts[0])
+        if (!isNaN(sy) && sy > maxStartYear) {
+          maxStartYear = sy
+        }
+      }
+    })
+    if (maxStartYear === 0) return '2025-2026'
+    return `${maxStartYear + 1}-${maxStartYear + 2}`
+  }, [academicYears])
+
+  const yearBounds = useMemo(() => {
+    const year = academicYears.find((y) => y.id === selectedYearId)
+    if (year) {
+      const parts = year.year_name.split('-')
+      if (parts.length === 2) {
+        const startY = parseInt(parts[0])
+        const endY = parseInt(parts[1])
+        if (!isNaN(startY) && !isNaN(endY)) {
+          return { startYear: startY, endYear: endY }
+        }
+      }
+    }
+    return null
+  }, [selectedYearId, academicYears])
+
+  const dateLimits = useMemo(() => {
+    if (!yearBounds) return { min: '', max: '' }
+    const startY = yearBounds.startYear
+    const endY = yearBounds.endYear
+    return {
+      min: `${startY}-06-01`,
+      max: `${endY}-05-31`
+    }
+  }, [yearBounds])
+
+  useEffect(() => {
+    if (yearBounds) {
+      const now = new Date()
+      const curY = now.getFullYear()
+      const curM = now.getMonth()
+
+      const startBound = new Date(yearBounds.startYear, 5, 1)
+      const endBound = new Date(yearBounds.endYear, 4, 31)
+
+      if (now >= startBound && now <= endBound) {
+        setCurrentYear(curY)
+        setCurrentMonth(curM)
+        setSelectedDate(`${curY}-${String(curM + 1).padStart(2, '0')}-01`)
+        setManualTargetDate(`${curY}-${String(curM + 1).padStart(2, '0')}-01`)
+      } else {
+        setCurrentYear(yearBounds.startYear)
+        setCurrentMonth(5) // June
+        setSelectedDate(`${yearBounds.startYear}-06-01`)
+        setManualTargetDate(`${yearBounds.startYear}-06-01`)
+      }
+    }
+  }, [yearBounds])
 
   useEffect(() => {
     const loadData = async () => {
@@ -100,7 +203,7 @@ const Calendar: React.FC = () => {
       }
 
       // 2. Fetch Events (filtered by current year if possible, but let's start with all and we'll filter in state)
-      const { data: eventsData, error } = await supabase.from('calendar_events').select('*')
+      const { data: eventsData, error } = await supabase.from('calendar_events').select('*, calendar_event_keywords(keyword)')
       if (error) {
         console.error('Error fetching events:', error)
       } else if (eventsData) {
@@ -170,6 +273,8 @@ const Calendar: React.FC = () => {
   const [newEventTitle, setNewEventTitle] = useState('')
   const [newEventType, setNewEventType] = useState<EventType>('holiday')
   const [newEventKeywords, setNewEventKeywords] = useState('')
+  const [editEventKeywords, setEditEventKeywords] = useState('')
+  const [isGeneratingKeywords, setIsGeneratingKeywords] = useState(false)
 
   // DYNAMIC DAYS
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
@@ -233,14 +338,25 @@ const Calendar: React.FC = () => {
         ? rangeDates
         : selectedDates.length > 0
           ? selectedDates
-          : [selectedDate]
+          : [manualTargetDate || selectedDate]
     )
   )
 
   // Get current academic year for notification purposes
   const currentAcademicYear = academicYears.find(y => y.is_current)
-  const isEventInCurrentYear = (eventYearId: string): boolean => {
-    return currentAcademicYear ? eventYearId === currentAcademicYear.id : false
+  const isEventInCurrentYear = (dateStr: string): boolean => {
+    if (!currentAcademicYear) return false
+    const parts = currentAcademicYear.year_name.split('-')
+    if (parts.length === 2) {
+      const sy = parseInt(parts[0])
+      const ey = parseInt(parts[1])
+      if (!isNaN(sy) && !isNaN(ey)) {
+        const min = `${sy}-06-01`
+        const max = `${ey}-05-31`
+        return dateStr >= min && dateStr <= max
+      }
+    }
+    return false
   }
 
   // Send notification to all users about new event
@@ -275,6 +391,15 @@ const Calendar: React.FC = () => {
     }
   }
 
+  const logAudit = async (action: string, details: any) => {
+    try {
+      const act = action.includes('CREATE') ? 'INSERT' : action.includes('DELETE') ? 'DELETE' : 'UPDATE'
+      await logForensicActivity(act, 'calendar_events', details.dates?.[0] || 'multi-date', null, details)
+    } catch (err) {
+      console.error('Error logging calendar action:', err)
+    }
+  }
+
   const runTargetAction = async () => {
     if (activeTargetDates.length === 0) return
 
@@ -299,6 +424,13 @@ const Calendar: React.FC = () => {
         return
       }
 
+      await logAudit('CREATE_CALENDAR_EVENT', {
+        title: newEventTitle.trim(),
+        dates: activeTargetDates,
+        type: newEventType,
+        academic_year_id: selectedYearId,
+      })
+
       if (data && newEventKeywords.trim()) {
         const keywords = newEventKeywords.split(',').map(k => k.trim()).filter(Boolean)
         const keywordRows = data.flatMap(event =>
@@ -312,14 +444,17 @@ const Calendar: React.FC = () => {
         setEvents([...events, ...data])
 
         // Send notifications if events are in current academic year
-        const isCurrentYear = isEventInCurrentYear(selectedYearId)
-        if (isCurrentYear) {
-          for (const event of data) {
+        let notifiedCount = 0
+        for (const event of data) {
+          if (isEventInCurrentYear(event.date)) {
             await notifyUsersAboutEvent(event.title, event.date, event.type)
+            notifiedCount++
           }
-          toast.success(`${data.length} event(s) added and users notified`)
+        }
+        if (notifiedCount > 0) {
+          toast.success(`${notifiedCount} event(s) added and users notified`)
         } else {
-          toast.success(`${data.length} event(s) added for future academic year`)
+          toast.success(`${data.length} event(s) added for future/past academic year`)
         }
       }
 
@@ -344,6 +479,11 @@ const Calendar: React.FC = () => {
         toast.error('Failed to move events to archive')
         return
       }
+
+      await logAudit('DELETE_CALENDAR_EVENT', {
+        event_ids: idsToDelete,
+        dates: activeTargetDates,
+      })
     }
 
     // Update local state without refetching
@@ -388,7 +528,25 @@ const Calendar: React.FC = () => {
       return
     }
 
-    setEvents(events.map(e => e.id === editingEvent.id ? editingEvent : e))
+    await logForensicActivity('UPDATE', 'calendar_events', editingEvent.id, null, {
+      title: editingEvent.title,
+      type: editingEvent.type
+    })
+
+    // Save updated keywords
+    await supabase.from('calendar_event_keywords').delete().eq('event_id', editingEvent.id)
+
+    const cleanKws = editEventKeywords.split(',').map(k => k.trim()).filter(Boolean)
+    if (cleanKws.length > 0) {
+      const kwRows = cleanKws.map(kw => ({ event_id: editingEvent.id, keyword: kw.toLowerCase() }))
+      const { error: kwError } = await supabase.from('calendar_event_keywords').insert(kwRows)
+      if (kwError) console.error('Error adding keywords:', kwError)
+    }
+
+    const updatedKeywordsObj = cleanKws.map(kw => ({ keyword: kw.toLowerCase() }))
+    const updatedEvent = { ...editingEvent, calendar_event_keywords: updatedKeywordsObj }
+
+    setEvents(events.map(e => e.id === editingEvent.id ? updatedEvent : e))
     setIsEditModalOpen(false)
     setEditingEvent(null)
     toast.success('Event updated')
@@ -458,7 +616,19 @@ const Calendar: React.FC = () => {
                   const id = e.target.value
                   setSelectedYearId(id)
                   const year = academicYears.find(y => y.id === id)
-                  if (year) setGlobalAcademicYear(year.year_name)
+                  if (year) {
+                    setGlobalAcademicYear(year.year_name)
+                    const parts = year.year_name.split('-')
+                    if (parts.length === 2) {
+                      const sy = parseInt(parts[0])
+                      if (!isNaN(sy)) {
+                        setCurrentYear(sy)
+                        setCurrentMonth(5) // June
+                        setSelectedDate(`${sy}-06-01`)
+                        setManualTargetDate(`${sy}-06-01`)
+                      }
+                    }
+                  }
                 }}
                 className="bg-transparent text-white text-[10px] font-bold focus:outline-none cursor-pointer"
               >
@@ -468,26 +638,6 @@ const Calendar: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <button
-                onClick={async () => {
-                  const year = academicYears.find(y => y.id === selectedYearId)
-                  if (!year) return
-                  setSavingYear(true)
-                  const { error } = await setAcademicYearAsCurrent(year.id, year.year_name)
-                  setSavingYear(false)
-                  if (!error) {
-                    toast.success('System scope updated. All users must re-accept Conforme.')
-                    const { data } = await fetchAcademicYears()
-                    if (data) setAcademicYears(data)
-                  }
-                  else toast.error(error)
-                }}
-                disabled={savingYear}
-                className="px-2 py-0.5 bg-white hover:bg-slate-100 text-blue-800 rounded text-[9px] font-bold disabled:opacity-50 transition-colors"
-                title="Mark this year as current system-wide"
-              >
-                {savingYear ? '...' : 'Set'}
-              </button>
               <button
                 onClick={() => setIsYearModalOpen(true)}
                 className="text-[10px] opacity-70 hover:opacity-100 transition-opacity"
@@ -510,7 +660,12 @@ const Calendar: React.FC = () => {
               {showArchived ? 'Active' : 'Archive'}
             </button>
             <button
-              onClick={() => setIsTargetRunnerOpen(true)}
+              onClick={() => {
+                setSelectedDates([])
+                setManualTargetDate(selectedDate)
+                setTargetAction('add')
+                setIsTargetRunnerOpen(true)
+              }}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full text-[10px] font-bold uppercase tracking-wider transition-all shadow-md active:scale-95"
             >
               Add Event
@@ -540,7 +695,8 @@ const Calendar: React.FC = () => {
                           setCurrentMonth(currentMonth - 1)
                         }
                       }}
-                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-600"
+                      disabled={yearBounds ? currentYear === yearBounds.startYear && currentMonth === 5 : false}
+                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-slate-600"
                     >
                       <span className="text-lg">←</span>
                     </button>
@@ -563,7 +719,8 @@ const Calendar: React.FC = () => {
                           setCurrentMonth(currentMonth + 1)
                         }
                       }}
-                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-600"
+                      disabled={yearBounds ? currentYear === yearBounds.endYear && currentMonth === 4 : false}
+                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-slate-600"
                     >
                       <span className="text-lg">→</span>
                     </button>
@@ -633,6 +790,10 @@ const Calendar: React.FC = () => {
                         <button
                           key={di}
                           onClick={() => {
+                            if (dateLimits.min && dateLimits.max && (iso < dateLimits.min || iso > dateLimits.max)) {
+                              toast.error(`Please select the correct academic year from the header to manage dates for ${iso.split('-')[0]}.`)
+                              return
+                            }
                             setSelectedDate(iso)
                             setManualTargetDate(iso)
                             setSelectedEventIndexes([])
@@ -729,6 +890,10 @@ const Calendar: React.FC = () => {
                             toast.error('Failed to move selected events to archive')
                             return
                           }
+
+                          await logAudit('DELETE_CALENDAR_EVENT', {
+                            event_ids: idsToDelete,
+                          })
                         }
 
                         setEvents(
@@ -789,6 +954,8 @@ const Calendar: React.FC = () => {
                             <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
                               if (!showArchived) {
                                 setEditingEvent(event)
+                                const kws = (event.calendar_event_keywords || []).map(k => k.keyword).join(', ')
+                                setEditEventKeywords(kws)
                                 setIsEditModalOpen(true)
                               }
                             }}>
@@ -837,6 +1004,7 @@ const Calendar: React.FC = () => {
 
                 <button
                   onClick={() => {
+                    setSelectedDates([])
                     setManualTargetDate(selectedDate)
                     setIsTargetRunnerOpen(true)
                   }}
@@ -925,46 +1093,23 @@ const Calendar: React.FC = () => {
 
               {eventTargetMode === 'multiple' ? (
                 <div className="space-y-4">
-                  <div className="flex gap-3">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Date</label>
                     <input
                       type="date"
-                      className="flex-1 bg-slate-50 border border-slate-200 px-4 py-3 rounded-lg text-sm font-semibold focus:ring-2 focus:ring-blue-500/10 outline-none transition-all"
-                      value={manualTargetDate}
-                      onChange={(e) => setManualTargetDate(e.target.value)}
-                    />
-                    <button
-                      className="px-6 bg-slate-900 text-white rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-slate-800 transition-all"
-                      onClick={() => {
-                        if (!manualTargetDate) return
-                        setSelectedDates((prev: string[]) =>
-                          prev.includes(manualTargetDate)
-                            ? prev
-                            : [...prev, manualTargetDate]
-                        )
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-dyci-blue/10 outline-none transition-all"
+                      value={manualTargetDate || selectedDate}
+                      min={dateLimits.min}
+                      max={dateLimits.max}
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (dateLimits.min && dateLimits.max && (val < dateLimits.min || val > dateLimits.max)) {
+                          toast.error(`Date must be within the selected academic year: ${dateLimits.min} to ${dateLimits.max}`)
+                          return
+                        }
+                        setManualTargetDate(val)
                       }}
-                    >
-                      Add
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto custom-scrollbar p-1">
-                    {selectedDates.length === 0 && (
-                      <div className="col-span-2 py-8 text-center bg-slate-50 rounded-lg border border-dashed border-slate-200">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Add dates above</p>
-                      </div>
-                    )}
-                    {selectedDates.map((date) => (
-                      <div key={date} className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded-2xl group">
-                        <span className="text-xs font-bold text-slate-700">{date}</span>
-                        <button
-                          className="text-slate-400 hover:text-red-500 transition-colors font-black"
-                          onClick={() =>
-                            setSelectedDates((prev: string[]) => prev.filter((d: string) => d !== date))
-                          }
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
+                    />
                   </div>
                 </div>
               ) : (
@@ -976,7 +1121,16 @@ const Calendar: React.FC = () => {
                         type="date"
                         className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-dyci-blue/10 outline-none"
                         value={rangeStartDate}
-                        onChange={(e) => setRangeStartDate(e.target.value)}
+                        min={dateLimits.min}
+                        max={dateLimits.max}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          if (dateLimits.min && dateLimits.max && (val < dateLimits.min || val > dateLimits.max)) {
+                            toast.error(`Start date must be within the selected academic year: ${dateLimits.min} to ${dateLimits.max}`)
+                            return
+                          }
+                          setRangeStartDate(val)
+                        }}
                       />
                     </div>
                     <div className="space-y-2">
@@ -985,7 +1139,16 @@ const Calendar: React.FC = () => {
                         type="date"
                         className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-dyci-blue/10 outline-none"
                         value={rangeEndDate}
-                        onChange={(e) => setRangeEndDate(e.target.value)}
+                        min={dateLimits.min}
+                        max={dateLimits.max}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          if (dateLimits.min && dateLimits.max && (val < dateLimits.min || val > dateLimits.max)) {
+                            toast.error(`End date must be within the selected academic year: ${dateLimits.min} to ${dateLimits.max}`)
+                            return
+                          }
+                          setRangeEndDate(val)
+                        }}
                       />
                     </div>
                   </div>
@@ -1037,13 +1200,43 @@ const Calendar: React.FC = () => {
               {targetAction === 'add' && (
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Keywords (for Chat Bot)</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. holiday, break, no classes"
-                    className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-slate-900 shadow-sm"
-                    value={newEventKeywords}
-                    onChange={(e) => setNewEventKeywords(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="e.g. holiday, break, no classes"
+                      className="flex-1 bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500/20 outline-none transition-all text-slate-900 shadow-sm"
+                      value={newEventKeywords}
+                      onChange={(e) => setNewEventKeywords(e.target.value)}
+                    />
+                    <button
+                      onClick={async () => {
+                        if (!newEventTitle.trim()) {
+                          toast.error('Enter an event description first to generate keywords')
+                          return
+                        }
+                        setIsGeneratingKeywords(true)
+                        try {
+                          const suggestions = await generateKeywords(newEventTitle, `Event Category: ${newEventType}`)
+                          if (suggestions && suggestions.length > 0) {
+                            const current = newEventKeywords.split(',').map(k => k.trim()).filter(Boolean)
+                            const merged = Array.from(new Set([...current, ...suggestions])).join(', ')
+                            setNewEventKeywords(merged)
+                            toast.success('Keywords generated and appended')
+                          } else {
+                            toast.error('No keywords generated')
+                          }
+                        } catch (err: any) {
+                          toast.error(err.message || 'Failed to generate keywords')
+                        } finally {
+                          setIsGeneratingKeywords(false)
+                        }
+                      }}
+                      disabled={isGeneratingKeywords}
+                      className="px-4 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl text-xs font-black uppercase tracking-widest border border-blue-100 transition-all disabled:opacity-50"
+                    >
+                      {isGeneratingKeywords ? '...' : 'AI'}
+                    </button>
+                  </div>
                   <p className="px-1 text-[9px] text-slate-400 leading-tight">Separate multiple keywords with commas. These help students find events via the support chat.</p>
                 </div>
               )}
@@ -1056,7 +1249,7 @@ const Calendar: React.FC = () => {
                 <button
                   className="px-8 py-4 bg-dyci-blue text-white rounded-2xl text-xs font-bold uppercase tracking-widest transition-all shadow-sm shadow-blue-900/10 hover:bg-blue-800"
                   disabled={activeTargetDates.length === 0}
-                  onClick={runTargetAction}
+                  onClick={() => setIsRunConfirmOpen(true)}
                 >
                   Run Transformation
                 </button>
@@ -1085,34 +1278,52 @@ const Calendar: React.FC = () => {
 
             <div className="space-y-2">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Add New Year</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="e.g. 2026-2027"
-                  className="flex-1 bg-slate-50 border border-slate-200 px-3 py-2 rounded-2xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={newYearName}
-                  onChange={(e) => setNewYearName(e.target.value)}
-                />
+              <div className="flex flex-col gap-2">
                 <button
-                  onClick={async () => {
-                    if (!newYearName.trim()) return
-                    setIsCreatingYear(true)
-                    const { data, error } = await createAcademicYear(newYearName.trim())
-                    setIsCreatingYear(false)
-                    if (error) toast.error(error)
-                    else if (data) {
-                      setAcademicYears([...academicYears, data])
-                      setNewYearName('')
-                      toast.success('New academic year added')
-                    }
-                  }}
+                  onClick={() => setShowAddConfirmModal(true)}
                   disabled={isCreatingYear}
-                  className="px-4 py-2 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800 disabled:opacity-50"
+                  className="w-full py-3 bg-slate-900 text-white rounded-2xl text-xs font-bold hover:bg-slate-800 disabled:opacity-50 transition-all shadow-sm shadow-slate-900/10"
                 >
-                  {isCreatingYear ? '...' : 'Add'}
+                  {isCreatingYear ? '...' : `Add Year ${nextAcademicYearName}`}
                 </button>
               </div>
             </div>
+
+            {showAddConfirmModal && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowAddConfirmModal(false)} />
+                <div className="w-full max-w-xs bg-white rounded-2xl border border-slate-200 shadow-xl p-5 relative z-10">
+                  <h4 className="text-sm font-black text-slate-900 mb-2">Confirm Addition</h4>
+                  <p className="text-xs text-slate-600 mb-4">
+                    Are you sure you want to add the academic year <strong>{nextAcademicYearName}</strong>?
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowAddConfirmModal(false)}
+                      className="flex-1 py-2 bg-slate-100 text-slate-600 rounded-2xl text-[11px] font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setShowAddConfirmModal(false)
+                        setIsCreatingYear(true)
+                        const { data, error } = await createAcademicYear(nextAcademicYearName)
+                        setIsCreatingYear(false)
+                        if (error) toast.error(error)
+                        else if (data) {
+                          setAcademicYears([...academicYears, data])
+                          toast.success(`Academic year ${nextAcademicYearName} added`)
+                        }
+                      }}
+                      className="flex-1 py-2 bg-slate-900 text-white rounded-2xl text-[11px] font-bold hover:bg-slate-800"
+                    >
+                      Yes, Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <button
               onClick={() => setIsYearModalOpen(false)}
@@ -1153,6 +1364,46 @@ const Calendar: React.FC = () => {
                   <option value="event">Event</option>
                 </select>
               </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Keywords (for Chat Bot)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. holiday, break, no classes"
+                    className="flex-1 bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none"
+                    value={editEventKeywords}
+                    onChange={(e) => setEditEventKeywords(e.target.value)}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!editingEvent.title.trim()) {
+                        toast.error('Enter an event description first to generate keywords')
+                        return
+                      }
+                      setIsGeneratingKeywords(true)
+                      try {
+                        const suggestions = await generateKeywords(editingEvent.title, `Event Category: ${editingEvent.type}`)
+                        if (suggestions && suggestions.length > 0) {
+                          const current = editEventKeywords.split(',').map(k => k.trim()).filter(Boolean)
+                          const merged = Array.from(new Set([...current, ...suggestions])).join(', ')
+                          setEditEventKeywords(merged)
+                          toast.success('Keywords generated and appended')
+                        } else {
+                          toast.error('No keywords generated')
+                        }
+                      } catch (err: any) {
+                        toast.error(err.message || 'Failed to generate keywords')
+                      } finally {
+                        setIsGeneratingKeywords(false)
+                      }
+                    }}
+                    disabled={isGeneratingKeywords}
+                    className="px-4 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-2xl text-xs font-black uppercase tracking-widest border border-blue-100 transition-all disabled:opacity-50"
+                  >
+                    {isGeneratingKeywords ? '...' : 'AI'}
+                  </button>
+                </div>
+              </div>
               <div className="flex gap-2 pt-4">
                 <button
                   onClick={() => setIsEditModalOpen(false)}
@@ -1167,6 +1418,32 @@ const Calendar: React.FC = () => {
                   Save Changes
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {isRunConfirmOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsRunConfirmOpen(false)} />
+          <div className="w-full max-w-sm bg-white rounded-lg border border-slate-200 shadow-md p-6 relative z-10 animate-in fade-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-bold text-slate-900 mb-2">Confirm Action</h3>
+            <p className="text-xs text-slate-500 mb-6">Are you sure you want to run this transformation and update the academic calendar?</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setIsRunConfirmOpen(false)}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl text-xs font-black uppercase tracking-widest transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setIsRunConfirmOpen(false)
+                  await runTargetAction()
+                }}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-black uppercase tracking-widest transition-all shadow-sm"
+              >
+                Confirm
+              </button>
             </div>
           </div>
         </div>

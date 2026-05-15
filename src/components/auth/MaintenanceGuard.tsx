@@ -71,7 +71,7 @@ const MaintenanceGuard: React.FC<MaintenanceGuardProps> = ({ children }) => {
     const isSysAdminPath = window.location.pathname.startsWith('/sysadmin');
 
     // 2. Resolve role logic
-    const isL90 = authoritativeRole === 'system_admin';
+    const isL90 = authoritativeRole === 'system_admin' || authoritativeRole === 'sysadmin';
     const isRoleLoading = user && !authoritativeRole;
 
     // 3. Redirection logic

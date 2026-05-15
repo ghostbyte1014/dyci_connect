@@ -42,17 +42,28 @@ const formatDate = (dateStr: string): string => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const getEventType = (action: string, tableName: string, _oldData?: any, _newData?: any): string => {
-  const securityTables = ['user_roles', 'profiles', 'student_profiles', 'staff_profiles', 'migration_state_machine'];
-  const governanceTables = ['handbook_views', 'handbook_sections', 'handbook_approvals', 'handbook_approval_requirements', 'handbooks'];
-  const academicTables = ['grades', 'enrollments', 'academic_years', 'sections'];
-  const storageTables = ['files', 'folders', 'file_versions'];
-  const studentTables = ['todos'];
+const getEventType = (action: string, tableName: string, oldData?: any, newData?: any, log?: any, currentFilter?: string): string => {
+  const securityTables = ['user_roles', 'migration_state_machine'];
+  const governanceTables = ['handbook_views', 'handbook_approvals', 'handbook_approval_requirements', 'handbook_l3_approvals', 'handbooks', 'handbook_sections'];
+  const academicTables = ['enrollments', 'academic_years', 'sections', 'handbook_sections', 'handbooks', 'calendar_events'];
+  const storageTables: string[] = [];
+  const studentTables = ['todos', 'grades', 'files', 'folders', 'file_versions', 'profiles', 'student_profiles', 'staff_profiles'];
   const publicationTables = ['cms_content', 'posts', 'pages', 'news', 'announcements'];
   const chatTables = ['chat_messages', 'conversations', 'conversation_participants', 'chat_message_edits'];
 
+  if (['profiles', 'student_profiles', 'staff_profiles'].includes(tableName)) {
+    const actorRole = log?.actor_role || log?.actor?.role || 'system';
+    if (actorRole === 'student') return 'Student';
+    return 'Security';
+  }
+
+
+
   if (securityTables.includes(tableName)) return 'Security';
-  if (governanceTables.includes(tableName)) return 'Governance';
+  if (governanceTables.includes(tableName)) {
+    if (currentFilter === 'Academic') return 'Academic';
+    return 'Governance';
+  }
   if (academicTables.includes(tableName)) return 'Academic';
   if (storageTables.includes(tableName)) return 'Storage';
   if (studentTables.includes(tableName)) return 'Student';
@@ -63,6 +74,24 @@ const getEventType = (action: string, tableName: string, _oldData?: any, _newDat
 };
 
 const getActionLabel = (action: string, tableName: string, oldData?: any, newData?: any): string => {
+  if (tableName === 'handbook_sections') {
+    const title = newData?.title || oldData?.title || 'Section/Chapter';
+    const parentId = newData?.parent_id || oldData?.parent_id;
+    const typeLabel = parentId ? 'Section' : 'Chapter';
+
+    if (action === 'INSERT') return `Created ${typeLabel.toLowerCase()} — ${title}`;
+    if (action === 'UPDATE') return `Modified ${typeLabel.toLowerCase()} — ${title}`;
+    if (action === 'DELETE') return `Deleted ${typeLabel.toLowerCase()} — ${title}`;
+  }
+
+  if (tableName === 'handbooks') {
+    const title = newData?.title || oldData?.title || 'Handbook';
+
+    if (action === 'INSERT') return `Created handbook — ${title}`;
+    if (action === 'UPDATE') return `Modified handbook — ${title}`;
+    if (action === 'DELETE') return `Deleted handbook — ${title}`;
+  }
+
   // Handbook governance events
   if (tableName === 'handbook_views') {
     const oldStatus = oldData?.approval_status;
@@ -84,12 +113,21 @@ const getActionLabel = (action: string, tableName: string, oldData?: any, newDat
 
   // Handbook approval workflow events
   if (tableName === 'handbook_approvals') {
-    const position = newData?.position || oldData?.position || 'Position';
-    const sectionTitle = newData?.section_title || oldData?.section_title || 'Section';
+    const position = newData?.position || oldData?.position || 'Department';
+    const decision = newData?.decision || oldData?.decision || 'approved';
 
-    if (action === 'INSERT') return `${position} Approval Recorded — ${sectionTitle}`;
-    if (action === 'UPDATE') return `${position} Approval Updated — ${sectionTitle}`;
-    if (action === 'DELETE') return `${position} Approval Revoked — ${sectionTitle}`;
+    if (action === 'INSERT') return `${position} Departmental Approval Recorded — ${decision}`;
+    if (action === 'UPDATE') return `${position} Departmental Approval Updated — ${decision}`;
+    if (action === 'DELETE') return `${position} Departmental Approval Revoked`;
+  }
+
+  if (tableName === 'handbook_l3_approvals') {
+    const position = newData?.approver_position || oldData?.approver_position || 'Executive';
+    const decision = newData?.decision || oldData?.decision || 'Approved';
+
+    if (action === 'INSERT') return `${position} Final Approval Recorded — ${decision}`;
+    if (action === 'UPDATE') return `${position} Final Approval Updated — ${decision}`;
+    if (action === 'DELETE') return `${position} Final Approval Revoked`;
   }
 
   // Student todos events
@@ -198,15 +236,19 @@ const SysAdminForensics: React.FC = () => {
 
   // Client-side filtering for joined data (Actor name/email) that server-side .or() can't reach easily
   const filteredLogs = useMemo(() => {
-    if (!search.trim()) return logs;
+    let filtered = logs;
+    if (filterEventClass !== 'ALL') {
+      filtered = filtered.filter(log => getEventType(log.action, log.table_name, log.old_data, log.new_data, log, filterEventClass) === filterEventClass);
+    }
+    if (!search.trim()) return filtered;
     const s = search.toLowerCase().trim();
-    return logs.filter(log => {
+    return filtered.filter(log => {
       const actorName = log.actor ? `${log.actor.first_name} ${log.actor.last_name}`.toLowerCase() : 'system';
       const actorEmail = log.actor?.email?.toLowerCase() || '';
       const actorRole = (log.actor_role || log.actor?.role || 'system').toLowerCase();
       const actionLabel = getActionLabel(log.action, log.table_name, log.old_data, log.new_data).toLowerCase();
       const tableName = log.table_name.toLowerCase();
-      const category = getEventType(log.action, log.table_name, log.old_data, log.new_data).toLowerCase();
+      const category = getEventType(log.action, log.table_name, log.old_data, log.new_data, log, filterEventClass).toLowerCase();
       const dateStr = formatDate(log.created_at).toLowerCase();
       const timeStr = formatTime(log.created_at).toLowerCase();
       const actionType = log.action.toLowerCase();
@@ -238,6 +280,13 @@ const SysAdminForensics: React.FC = () => {
     return () => clearTimeout(timeout);
   }, [search]);
 
+  useEffect(() => {
+    supabase.from('audit_logs').select('table_name').then(res => {
+      const tableNames = Array.from(new Set(res.data?.map(d => d.table_name)));
+      console.log('--- DIAGNOSIS: Available table names in audit logs ---', tableNames);
+    });
+  }, []);
+
   const fetchLogs = async () => {
     setLoading(true);
     setError(null);
@@ -268,12 +317,12 @@ const SysAdminForensics: React.FC = () => {
 
       // 3. Filter by event class (table groups)
       if (filterEventClass !== 'ALL') {
-        const securityTables = ['user_roles', 'profiles', 'student_profiles', 'staff_profiles', 'migration_state_machine'];
-        const governanceTables = ['handbook_views', 'handbook_sections', 'handbook_approvals', 'handbook_approval_requirements', 'handbooks'];
+        const securityTables = ['user_roles', 'migration_state_machine'];
+        const governanceTables = ['handbook_views', 'handbook_approvals', 'handbook_approval_requirements', 'handbook_l3_approvals', 'handbooks', 'handbook_sections'];
         const publicationTables = ['cms_content', 'posts', 'pages', 'news', 'announcements'];
-        const academicTables = ['grades', 'enrollments', 'academic_years', 'sections'];
-        const storageTables = ['files', 'folders', 'file_versions'];
-        const studentTables = ['todos'];
+        const academicTables = ['enrollments', 'academic_years', 'sections', 'handbook_sections', 'handbooks', 'calendar_events'];
+        const storageTables: string[] = [];
+        const studentTables = ['todos', 'grades', 'files', 'folders', 'file_versions', 'profiles', 'student_profiles', 'staff_profiles'];
         const chatTables = ['chat_messages', 'conversations', 'conversation_participants', 'chat_message_edits'];
 
         switch (filterEventClass) {
@@ -482,7 +531,7 @@ const SysAdminForensics: React.FC = () => {
                   </tr>
                 ) : (
                   filteredLogs.map((log) => {
-                    const eventType = getEventType(log.action, log.table_name, log.old_data, log.new_data);
+                    const eventType = getEventType(log.action, log.table_name, log.old_data, log.new_data, log, filterEventClass);
                     const actorName = log.actor
                       ? `${log.actor.first_name || ''} ${log.actor.last_name || ''}`.trim() || log.actor.email || 'System'
                       : 'System';

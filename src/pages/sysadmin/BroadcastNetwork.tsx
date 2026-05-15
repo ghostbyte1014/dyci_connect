@@ -13,7 +13,7 @@ const BroadcastNetwork: React.FC = () => {
                 <div className="unified-header-content flex items-center justify-between">
                     <div>
                         <h1 className="unified-header-title">Broadcast Network</h1>
-                        <p className="unified-header-subtitle">Institutional Video Delivery & R2 Transmissions</p>
+                        <p className="unified-header-subtitle">Institutional Video Delivery & Cloud Upload</p>
                     </div>
                     <button
                         onClick={() => setVideoModalOpen(true)}

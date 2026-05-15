@@ -152,6 +152,41 @@ async function getCurrentUserId(): Promise<string | null> {
   return session?.user?.id ?? null
 }
 
+export async function logForensicActivity(
+  action: 'INSERT' | 'UPDATE' | 'DELETE',
+  tableName: string,
+  recordId: string,
+  oldData?: any,
+  newData?: any
+) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.user) return
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single()
+
+    const role = profile?.role || 'system'
+
+    await supabase.from('audit_logs').insert({
+      actor_id: session.user.id,
+      actor_role: role,
+      action,
+      table_name: tableName,
+      record_id: recordId,
+      old_data: oldData || null,
+      new_data: newData || null,
+      ip_address: 'client-side',
+      user_agent: navigator.userAgent || 'web-client',
+    })
+  } catch (err) {
+    console.error('Error logging forensics activity:', err)
+  }
+}
+
 const DEPT_TO_POSITION: Record<string, ApproverPosition> = {
   'Scholarship': 'scholarship',
   'Department of Finance': 'finance',
@@ -163,6 +198,15 @@ const DEPT_TO_POSITION: Record<string, ApproverPosition> = {
   'Office of the Vice President': 'vice_president',
 }
 
+let cachedOffices: { name: string; slug: string }[] = []
+
+supabase
+  .from('college_offices')
+  .select('name, slug')
+  .then(({ data }) => {
+    if (data) cachedOffices = data
+  })
+
 export function derivePositionFromProfile(profile: {
   approver_position?: string | null
   department?: string | null
@@ -171,6 +215,9 @@ export function derivePositionFromProfile(profile: {
     return profile.approver_position as ApproverPosition
   }
   if (profile.department) {
+    const matched = cachedOffices.find(o => o.name === profile.department)
+    if (matched) return matched.slug as ApproverPosition
+
     return DEPT_TO_POSITION[profile.department] ?? null
   }
   return null
@@ -533,6 +580,12 @@ export async function approveSectionAtLevel(
 
   if (error) return { error: error.message }
 
+  await logForensicActivity('INSERT', 'handbook_approvals', sectionId, null, {
+    position,
+    decision: 'approved',
+    section_title: section?.title || 'a section'
+  })
+
   const sectionTitle = section?.title ?? 'a section'
 
   if (level === 2) {
@@ -596,6 +649,12 @@ export async function rejectSectionAtLevel(
     }, { onConflict: 'handbook_section_id,approver_user_id,position,workflow_stage_id' })
 
   if (error) return { error: error.message }
+
+  await logForensicActivity('INSERT', 'handbook_approvals', sectionId, null, {
+    position,
+    decision: 'rejected',
+    section_title: section?.title || 'a section'
+  })
 
   const sectionTitle = section?.title ?? 'a section'
 
@@ -804,6 +863,11 @@ export async function approveHandbookAtLevel(
 
   if (error) return { error: error.message, autoPublished: false }
 
+  await logForensicActivity('INSERT', 'handbook_l3_approvals', handbookId, null, {
+    approver_position: position,
+    decision: 'approved'
+  })
+
   // Fetch handbook to check for scheduled publish date
   const { data: hb } = await supabase
     .from('handbooks')
@@ -883,6 +947,9 @@ export async function publishHandbookNow(handbookId: string) {
     .eq('id', handbookId)
 
   if (!waitingForDate && !error) {
+    await logForensicActivity('UPDATE', 'handbooks', handbookId, null, {
+      status: 'published'
+    })
     await notifyAllVerifiedUsers('New Handbook Published', 'The official DYCI Student Handbook for the current academic year has been published. Please review the updated policies.', '/staff/handbook')
   }
 
@@ -897,3 +964,17 @@ export async function publishHandbookNow(handbookId: string) {
 
   return { error: error?.message ?? null, waitingForDate }
 }
+
+export async function cloneHandbook(
+  sourceHandbookId: string,
+  title: string,
+  academicYearId: string
+) {
+  const { data, error } = await supabase.rpc('clone_handbook', {
+    source_hb_id: sourceHandbookId,
+    new_title: title,
+    new_ay_id: academicYearId
+  })
+  return { data: data as string | null, error: error?.message ?? null }
+}
+

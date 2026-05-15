@@ -61,9 +61,11 @@ const AuthCallback: React.FC = () => {
         setStatus('done')
         return
       }
-      if (role === 'academic_admin') {
+      if (role === 'system_admin' || role === 'sysadmin') {
+        navigate('/sysadmin/dashboard', { replace: true })
+      } else if (role === 'academic_admin') {
         navigate('/admin/dashboard', { replace: true })
-      } else if (role === 'staff') {
+      } else if (role === 'staff' || role === 'faculty') {
         navigate('/staff/dashboard', { replace: true })
       } else {
         navigate('/student/dashboard', { replace: true })

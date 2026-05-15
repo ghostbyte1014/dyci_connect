@@ -12,7 +12,8 @@ interface AuthContextType {
   authoritativeRole: UserRole | null
   loading: boolean
   signUp: (email: string, password: string, role: UserRole, userData: any) => Promise<{ data: any; error: any }>
-  signIn: (email: string, password: string) => Promise<{ data: any; error: any }>
+  signIn: (email: string, password: string) => Promise<{ data: any; error: any; requires_otp?: boolean; hwid?: string }>
+  verifyDeviceOtp: (email: string, code: string, hwid: string, rememberDevice: boolean) => Promise<{ data: any; error: any }>
   signOut: () => Promise<{ error: any }>
   signInWithGoogle: () => Promise<{ error: any }>
   resetPassword: (email: string) => Promise<{ data: any; error: any }>
@@ -38,6 +39,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [authoritativeRole, setAuthoritativeRole] = useState<UserRole | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const isRefreshing = React.useRef(false)
+  const isVerifyingDevice = React.useRef(false)
+
+  // Hardware Fingerprinting function
+  const getHWID = () => {
+    try {
+      const nav = window.navigator
+      const screen = window.screen
+      const rawId = `${nav.userAgent}-${screen.width}x${screen.height}-${nav.hardwareConcurrency || 1}`
+      return btoa(rawId)
+    } catch (e) {
+      return 'unknown-device-fallback'
+    }
+  }
 
   const fetchAuthData = async (userId: string) => {
     try {
@@ -90,6 +104,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: any) => {
         const currentUser = session?.user as User | null;
+        
+        // Skip auth state updates if we are in the middle of checking the device HWID
+        if (isVerifyingDevice.current) return;
+
         setUser(currentUser);
         if (currentUser && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
           fetchAuthData(currentUser.id);
@@ -142,14 +160,60 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }
 
   const signIn = async (email: string, password: string) => {
+    isVerifyingDevice.current = true;
+    
     // Real Supabase sign in
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
 
-    if (!error && (data as any)?.user) {
-      const signedInUser = (data as any).user as User
+    if (error || !(data as any)?.user) {
+      isVerifyingDevice.current = false;
+      return { data: null, error }
+    }
+
+    const signedInUser = (data as any).user as User
+
+    // --- TEST ACCOUNTS BYPASS ---
+    // These specific test emails will bypass the New Device OTP check
+    const bypassEmails = [
+      'Aadmin@gmail.com', 'aadmin@gmail.com',
+      'Sadmin@gmail.com', 'sadmin@gmail.com',
+      'scholarship@dyci.edu',
+      'finance@dyci.edu',
+      'registrar@dyci.edu',
+      'guidance@dyci.edu',
+      'property@dyci.edu',
+      'academic.council@dyci.edu',
+      'president@dyci.edu',
+      'vice.president@dyci.edu',
+      'student@dyci.edu'
+    ];
+
+    if (bypassEmails.includes(email.toLowerCase())) {
+      setUser(signedInUser)
+      await supabase
+        .from('profiles')
+        .update({ last_login: new Date().toISOString(), auth_provider: 'email' })
+        .eq('id', signedInUser.id)
+      
+      isVerifyingDevice.current = false;
+      fetchAuthData(signedInUser.id);
+      return { data, error: null, requires_otp: false }
+    }
+    // ----------------------------
+
+    // 2. Check HWID (Device Fingerprinting)
+    const hwid = getHWID()
+    const { data: trustedDevice, error: devError } = await supabase
+      .from('trusted_devices')
+      .select('id, is_active')
+      .eq('hwid_hash', hwid)
+      .maybeSingle()
+
+    // If device is trusted and active, proceed as normal
+    if (trustedDevice?.is_active) {
       setUser(signedInUser)
 
       // Update last_sign_in and auth_provider (email sign-in) in profiles
@@ -160,9 +224,82 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           auth_provider: 'email',
         })
         .eq('id', signedInUser.id)
+
+      isVerifyingDevice.current = false;
+      fetchAuthData(signedInUser.id);
+      return { data, error: null, requires_otp: false }
     }
 
-    return { data, error }
+    // 3. Device NOT trusted or inactive. We need OTP.
+    // We sign them out so they don't have unauthorized access while waiting for OTP
+    await supabase.auth.signOut()
+    isVerifyingDevice.current = false;
+
+    // 4. Trigger Email OTP
+    const { error: otpError } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: false
+      }
+    })
+
+    if (otpError) {
+      return { data: null, error: otpError }
+    }
+
+    return { data: null, error: null, requires_otp: true, hwid }
+  }
+
+  const verifyDeviceOtp = async (email: string, code: string, hwid: string, rememberDevice: boolean) => {
+    isVerifyingDevice.current = true;
+    const { data, error } = await supabase.auth.verifyOtp({
+      email,
+      token: code,
+      type: 'email'
+    })
+
+    if (error || !data.user) {
+      isVerifyingDevice.current = false;
+      return { data: null, error }
+    }
+
+    const signedInUser = data.user as unknown as User
+    setUser(signedInUser)
+
+    if (rememberDevice) {
+      // Upsert the trusted device
+      // Note: In some browsers window.navigator.userAgentData is better, but platform is a safe fallback
+      const deviceName = /Windows/.test(navigator.userAgent) ? 'Windows PC' :
+                         /Mac OS/.test(navigator.userAgent) ? 'Mac' :
+                         /Linux/.test(navigator.userAgent) ? 'Linux' :
+                         /Android/.test(navigator.userAgent) ? 'Android Device' :
+                         /iPhone|iPad/.test(navigator.userAgent) ? 'iOS Device' : 'Unknown Device';
+
+      await supabase
+        .from('trusted_devices')
+        .upsert({
+          user_id: signedInUser.id,
+          hwid_hash: hwid,
+          device_name: deviceName,
+          is_active: true,
+          last_used_at: new Date().toISOString()
+        }, {
+          onConflict: 'user_id, hwid_hash'
+        })
+    }
+
+    // Update profile login
+    await supabase
+      .from('profiles')
+      .update({
+        last_login: new Date().toISOString(),
+        auth_provider: 'email_otp',
+      })
+      .eq('id', signedInUser.id)
+
+    isVerifyingDevice.current = false;
+    fetchAuthData(signedInUser.id);
+    return { data, error: null }
   }
 
   const signOut = async () => {
@@ -223,6 +360,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     loading,
     signUp,
     signIn,
+    verifyDeviceOtp,
     signOut,
     signInWithGoogle,
     resetPassword,

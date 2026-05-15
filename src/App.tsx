@@ -79,6 +79,9 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const [needsConforme, setNeedsConforme] = useState(false);
   const [needsProfile, setNeedsProfile] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  
+  // NEW: Track the last checked User ID to avoid unmounting the app during token refreshes
+  const lastUserIdRef = React.useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     const checkOnboarding = async () => {
@@ -87,11 +90,16 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
         return;
       }
 
-      // Reset states before re-checking to prevent stale redirect loops
-      setChecked(false);
-      setNeedsConforme(false);
-      setNeedsProfile(false);
-      setShowPasswordReset(false);
+      // 2. Reset state only when switching users to prevent the UI from unmounting during
+      // routine operations (like background token refreshes or navigation).
+      const isNewUser = lastUserIdRef.current !== user?.id;
+      if (isNewUser) {
+        setChecked(false);
+        setNeedsConforme(false);
+        setNeedsProfile(false);
+        setShowPasswordReset(false);
+        lastUserIdRef.current = user?.id;
+      }
 
       if (!user) {
         setChecked(true);
@@ -110,47 +118,55 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
           return;
         }
 
+        let nextShowPasswordReset = false;
+        let nextNeedsConforme = false;
+        let nextNeedsProfile = false;
+
         // Priority 1: Mandatory Password Reset (Institutional Security)
         if (profile.password_reset_required) {
-          setShowPasswordReset(true);
-          setChecked(true);
-          return;
-        }
+          nextShowPasswordReset = true;
+        } else {
+          // Priority 2: Institutional Onboarding Sequence (Conforme -> Profile)
+          const isStudent = authoritativeRole === 'student';
+          const isStaff = ['staff', 'faculty', 'academic_admin'].includes(authoritativeRole || '');
 
-        // Priority 2: Institutional Onboarding Sequence (Conforme -> Profile)
-        const isStudent = authoritativeRole === 'student';
-        const isStaff = ['staff', 'faculty', 'academic_admin'].includes(authoritativeRole || '');
+          if (isStudent || isStaff) {
+            const table = isStudent ? 'student_profiles' : 'staff_profiles';
+            const { data: subProfile, error: subError } = await supabase
+              .from(table)
+              .select('enrolled_academic_year_id')
+              .eq('profile_id', user.id)
+              .maybeSingle();
 
-        if (isStudent || isStaff) {
-          const table = isStudent ? 'student_profiles' : 'staff_profiles';
-          const { data: subProfile, error: subError } = await supabase
-            .from(table)
-            .select('enrolled_academic_year_id')
-            .eq('profile_id', user.id)
-            .maybeSingle();
+            if (subError) {
+              console.error('OnboardingGuard: Failed to verify sub-profile status', subError);
+              return; // Exit to avoid redirect loop on DB error
+            }
 
-          if (subError) {
-            console.error('OnboardingGuard: Failed to verify sub-profile status', subError);
-            return; // Exit to avoid redirect loop on DB error
-          }
+            // Check if conforme matches CURRENT academic year (Year Flip Enforcement)
+            const { data: currentYearId, error: ayError } = await supabase.rpc('get_current_academic_year_id');
+            
+            if (ayError) {
+              console.error('OnboardingGuard: Failed to fetch current academic year', ayError);
+              return;
+            }
 
-          // Check if conforme matches CURRENT academic year (Year Flip Enforcement)
-          const { data: currentYearId, error: ayError } = await supabase.rpc('get_current_academic_year_id');
-          
-          if (ayError) {
-            console.error('OnboardingGuard: Failed to fetch current academic year', ayError);
-            return;
-          }
+            const enrolledYear = subProfile?.enrolled_academic_year_id;
+            const conformeSigned = enrolledYear === currentYearId;
 
-          const enrolledYear = subProfile?.enrolled_academic_year_id;
-          const conformeSigned = enrolledYear === currentYearId;
-
-          if (!conformeSigned) {
-            setNeedsConforme(true);
-          } else if (!profile.profile_complete) {
-            setNeedsProfile(true);
+            if (!conformeSigned) {
+              nextNeedsConforme = true;
+            } else if (!profile.profile_complete) {
+              nextNeedsProfile = true;
+            }
           }
         }
+
+        // Update redirect states synchronously to prevent flickering
+        setShowPasswordReset(nextShowPasswordReset);
+        setNeedsConforme(nextNeedsConforme);
+        setNeedsProfile(nextNeedsProfile);
+
       } catch (err) {
         console.error('Onboarding check error:', err);
       } finally {

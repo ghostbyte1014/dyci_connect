@@ -1,8 +1,6 @@
 import { supabase } from '../lib/supabaseClient';
 
-const GROK_API_URL = import.meta.env.VITE_GROK_API_URL || 'https://api.groq.com/openai/v1/chat/completions';
-const GROK_API_KEY = import.meta.env.VITE_GROK_API_KEY;
-const GROK_MODEL = import.meta.env.VITE_GROK_MODEL || 'groq/compound-mini';
+// Remove direct API key imports - calls are now routed securely through Supabase Edge Function 'ai-grok'
 
 export const normalizeMessage = (content: string): string => {
   return content
@@ -148,39 +146,20 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
 };
 
 export const getAIResponse = async (content: string) => {
-  if (!GROK_API_KEY) {
-    console.warn('Grok API Key missing. Falling back to escalation.');
-    return null;
-  }
-
   try {
-    const response = await fetch(GROK_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: GROK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are the DYCI Assistant. Answer student questions based on the school handbook. If you don\'t know the answer, use your tools (web search, etc.) to double-check or say "I\'m not sure about that. Let me connect you to a staff member." Keep it professional and concise.',
-          },
-          { role: 'user', content },
-        ],
-        temperature: 0.5,
-        max_completion_tokens: 1024,
-        compound_custom: {
-          tools: {
-            enabled_tools: ["web_search", "code_interpreter", "visit_website"]
-          }
-        }
-      }),
+    const { data, error } = await supabase.functions.invoke('ai-grok', {
+      body: {
+        action: 'ai-response',
+        payload: { content }
+      }
     });
 
-    const data = await response.json();
-    return data.choices[0]?.message?.content || null;
+    if (error) {
+      console.warn('Grok Edge Function Error:', error);
+      return null;
+    }
+
+    return data?.content || null;
   } catch (error) {
     console.error('Error calling Grok AI:', error);
     return null;
@@ -202,49 +181,20 @@ export const validateSingleWordKeyword = (keyword: string): string | null => {
 };
 
 export const generateKeywords = async (title: string, body: string): Promise<string[]> => {
-  if (!GROK_API_KEY) {
-    throw new Error('GROK_API_KEY is missing. Please check your .env file.');
-  }
-
   try {
-    const response = await fetch(GROK_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: GROK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `Extract 3-6 single-word keywords for a school support bot. 
-
-STRICT RULES:
-1. Each keyword MUST be exactly ONE word (no spaces, no phrases)
-2. Keywords should be 3-15 characters long
-3. Use common search terms students would type
-4. Examples of GOOD keywords: "scholarship", "enrollment", "tuition", "grade", "exam", "drop"
-5. Examples of BAD keywords: "scholarship program", "how to enroll", "grade requirements"
-
-Return ONLY a JSON object: {"keywords": ["word1", "word2", "word3"]}. No markdown.`,
-          },
-          { role: 'user', content: `Section Title: ${title}\nSection Content: ${body}` },
-        ],
-        temperature: 0.3,
-        max_completion_tokens: 256,
-        // No web tools needed for keyword extraction
-      }),
+    const { data, error } = await supabase.functions.invoke('ai-grok', {
+      body: {
+        action: 'generate-keywords',
+        payload: { title, body }
+      }
     });
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error('Grok API Error:', errBody);
-      throw new Error(`AI API responded with status ${response.status}`);
+    if (error) {
+      console.error('Grok Edge Function Error during keyword generation:', error);
+      throw error;
     }
 
-    const data = await response.json();
-    const rawContent = data.choices[0]?.message?.content || '';
+    const rawContent = data?.content || '';
 
     // Attempt to parse JSON
     let keywords: string[] = [];
@@ -364,50 +314,20 @@ const getSummarizedResponse = async (
   sourceLabel: string, 
   keywords: string[] = []
 ): Promise<string | null> => {
-  if (!GROK_API_KEY) {
-    console.warn('Grok API Key missing. Using default formatting.');
-    return null;
-  }
-
   try {
-    const response = await fetch(GROK_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: GROK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: `You are the DYCI Assistant. You have been given specific school data to answer a student question. 
-
-IMPORTANT RULES:
-1. Answer using ONLY the provided source data below
-2. DO NOT search the web or use any external information
-3. Synthesize information from multiple sources if needed
-4. If the source data doesn't fully answer the question, acknowledge what you found and suggest the user ask for more details
-5. Be professional, concise, and helpful
-6. When citing information, mention the SECTION TITLE in parentheses, e.g., "(from Enrollment Procedures)" or "(Student Organizations section)"
-7. DO NOT use citation numbers like [1], [2], etc.
-
-Source: ${sourceLabel}
-Matched Keywords: ${keywords.join(', ')}`,
-          },
-          { 
-            role: 'user', 
-            content: `Student Question: ${question}\n\nSource Data:\n${sourceData}` 
-          },
-        ],
-        temperature: 0.3,
-        max_completion_tokens: 512,
-        // NO web tools - we only want to summarize the provided data
-      }),
+    const { data, error } = await supabase.functions.invoke('ai-grok', {
+      body: {
+        action: 'summarized-response',
+        payload: { question, sourceData, sourceLabel, keywords }
+      }
     });
 
-    const data = await response.json();
-    return data.choices[0]?.message?.content || null;
+    if (error) {
+      console.warn('Grok Edge Function Error during summary:', error);
+      return null;
+    }
+
+    return data?.content || null;
   } catch (error) {
     console.error('Error calling Grok AI for summary:', error);
     return null;

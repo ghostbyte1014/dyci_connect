@@ -79,9 +79,19 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const [needsConforme, setNeedsConforme] = useState(false);
   const [needsProfile, setNeedsProfile] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  
-  // NEW: Track the last checked User ID to avoid unmounting the app during token refreshes
-  const lastUserIdRef = React.useRef<string | null | undefined>(undefined);
+
+  // Reset onboarding check states when transitioning away from onboarding/conforme pages to prevent stale redirects
+  const lastPath = React.useRef(path);
+  if (lastPath.current !== path) {
+    const wasOnboarding = lastPath.current.startsWith('/complete-profile') || lastPath.current === '/conforme';
+    const isNowOnboarding = path.startsWith('/complete-profile') || path === '/conforme';
+    if (wasOnboarding && !isNowOnboarding) {
+      setChecked(false);
+      setNeedsConforme(false);
+      setNeedsProfile(false);
+    }
+    lastPath.current = path;
+  }
 
   useEffect(() => {
     const checkOnboarding = async () => {
@@ -90,18 +100,18 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
         return;
       }
 
-      // 2. Reset state only when switching users to prevent the UI from unmounting during
-      // routine operations (like background token refreshes or navigation).
-      const isNewUser = lastUserIdRef.current !== user?.id;
-      if (isNewUser) {
+      // Reset states only if we haven't loaded yet to prevent unmounting during silent re-checks
+      if (!checked) {
         setChecked(false);
         setNeedsConforme(false);
         setNeedsProfile(false);
         setShowPasswordReset(false);
-        lastUserIdRef.current = user?.id;
       }
 
       if (!user) {
+        setNeedsConforme(false);
+        setNeedsProfile(false);
+        setShowPasswordReset(false);
         setChecked(true);
         return;
       }
@@ -114,10 +124,14 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
           .maybeSingle();
 
         if (!profile) {
+          setNeedsConforme(false);
+          setNeedsProfile(false);
+          setShowPasswordReset(false);
           setChecked(true);
           return;
         }
 
+        // Track calculations locally to prevent rendering leaks during database roundtrip
         let nextShowPasswordReset = false;
         let nextNeedsConforme = false;
         let nextNeedsProfile = false;
@@ -162,11 +176,10 @@ const OnboardingGuard: React.FC<{ children: React.ReactNode }> = ({ children }) 
           }
         }
 
-        // Update redirect states synchronously to prevent flickering
+        // Apply batch state updates simultaneously at the end
         setShowPasswordReset(nextShowPasswordReset);
         setNeedsConforme(nextNeedsConforme);
         setNeedsProfile(nextNeedsProfile);
-
       } catch (err) {
         console.error('Onboarding check error:', err);
       } finally {

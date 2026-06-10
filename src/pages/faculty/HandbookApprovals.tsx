@@ -251,7 +251,6 @@ const HandbookApprovals: React.FC = () => {
     if (editorRef.current && editingSectionId) {
       editorRef.current.innerHTML = editContent
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingSectionId])
 
   const sectionsByHandbook = useCallback(() => {

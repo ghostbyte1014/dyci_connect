@@ -1140,7 +1140,6 @@ const StudentProfile: React.FC = () => {
                 <div className="flex items-center gap-4">
                   <div className="h-14 w-14 rounded-full bg-blue-50 flex items-center justify-center overflow-hidden border border-slate-200">
                     {avatarPreview || profile?.avatar_url ? (
-                      // eslint-disable-next-line jsx-a11y/img-redundant-alt
                       <img
                         src={avatarPreview || profile?.avatar_url}
                         alt="Profile picture preview"

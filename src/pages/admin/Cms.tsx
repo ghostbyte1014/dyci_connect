@@ -353,7 +353,6 @@ const Cms: React.FC = () => {
 
   useEffect(() => {
     if (editorRef.current && selectedNode) editorRef.current.innerHTML = selectedNode.content ?? ''
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
 
   // ── Data loading ────────────────────────────────────────────────────────

@@ -32,6 +32,8 @@ ghost/
 # Documentations
 docs/ 
 
+AIA-Finals/
+
 # Environment variables
 .env
 

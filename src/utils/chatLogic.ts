@@ -6,7 +6,13 @@ export const normalizeMessage = (content: string): string => {
   return content
     .toLowerCase()
     .trim()
-    .replace(/[^\w\s]/gi, '');
+    // Replace punctuation and symbols with spaces so words aren't glued (e.g. "dyci?" or "hello,world")
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()?"'’]/g, ' ')
+    // Remove any other remaining non-alphanumeric or non-whitespace characters
+    .replace(/[^\w\s]/gi, '')
+    // Collapse multiple spaces
+    .replace(/\s+/g, ' ')
+    .trim();
 };
 
 // Error handling wrapper for Supabase inserts
@@ -32,8 +38,8 @@ const extractWords = (message: string): string[] => {
 };
 
 export interface MatchResult {
-  type: 'handbook' | 'calendar';
-  data: any[];
+  handbookSections: any[];
+  calendarEvents: any[];
   keywords: string[]; // Track which keywords matched
 }
 
@@ -41,23 +47,54 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
   const words = extractWords(message);
   if (words.length === 0) return null;
 
-  // 1. Get current academic year ID
+  // 1. Get current academic year ID from school_settings
   let ayId: string | null = null;
-  const { data: rpcAyId } = await supabase.rpc('get_current_academic_year_id');
-  if (rpcAyId) {
-    ayId = rpcAyId;
+  const { data: settings } = await supabase
+    .from('school_settings')
+    .select('current_academic_year_id')
+    .maybeSingle()
+
+  if (settings?.current_academic_year_id) {
+    ayId = settings.current_academic_year_id
   } else {
-    const { data: years } = await supabase.from('academic_years').select('id, is_current').order('year_name', { ascending: false });
-    if (years && years.length > 0) {
-      const current = years.find(y => y.is_current);
-      ayId = current ? current.id : years[0].id;
-    }
+    const { data: currentYear } = await supabase
+      .from('academic_years')
+      .select('id')
+      .eq('is_current', true)
+      .maybeSingle()
+
+    ayId = currentYear?.id
   }
+
   if (!ayId) return null;
 
   const matchedHandbookSections = new Map<string, any>(); // section_id -> section data
   const matchedCalendarEvents = new Map<string, any>(); // event_id -> event data
   const matchedKeywords: string[] = [];
+
+  // 1b. Smart Calendar Override - if user asks for calendar, schedule, events, or mentions months/dates, fetch all events for the AI to filter
+  const lowercaseMessage = message.toLowerCase();
+  const calendarTriggers = [
+    'calendar', 'schedule', 'event', 'events', 'holiday', 'holidays', 'exam', 'exams',
+    'class', 'classes', 'enrollment', 'school year', 'sy', 'january', 'february', 'march',
+    'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'
+  ];
+  const isCalendarQuery = calendarTriggers.some(trigger => lowercaseMessage.includes(trigger));
+
+  if (isCalendarQuery) {
+    const { data: allEvents } = await supabase
+      .from('calendar_events')
+      .select('*')
+      .eq('academic_year_id', ayId)
+      .is('deleted_at', null);
+    
+    if (allEvents && allEvents.length > 0) {
+      allEvents.forEach((event: any) => {
+        matchedCalendarEvents.set(event.id, event);
+      });
+      matchedKeywords.push('calendar');
+    }
+  }
 
   // 2. Search Handbook Keywords - Get ALL matching sections
   const { data: handbookData } = await supabase
@@ -67,6 +104,7 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
       section_id, 
       handbook_sections!inner(
         id,
+        parent_id,
         title, 
         content,
         handbooks!inner(status, academic_year_id)
@@ -89,7 +127,7 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
     });
   }
 
-  // 3. Search Calendar Keywords - Get ALL matching events
+  // 3. Search Calendar Keywords - Get ALL matching events (if not already fetched by smart query)
   const { data: calData } = await supabase
     .from('calendar_event_keywords')
     .select(`
@@ -98,6 +136,7 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
       calendar_events!inner(*)
     `)
     .in('keyword', words)
+    .eq('calendar_events.academic_year_id', ayId)
     .is('calendar_events.deleted_at', null);
 
   if (calData && calData.length > 0) {
@@ -118,6 +157,7 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
     const { data: titleData } = await supabase
       .from('calendar_events')
       .select('*')
+      .eq('academic_year_id', ayId)
       .is('deleted_at', null)
       .ilike('title', `%${word}%`);
     if (titleData && titleData.length > 0) {
@@ -130,14 +170,81 @@ export const findMatch = async (message: string): Promise<MatchResult | null> =>
     }
   }
 
-  // 4. Build result with ALL matched sources
-  const handbookSections = Array.from(matchedHandbookSections.values());
+  // 4. Build result with ALL matched sources, including parents and children for handbook sections
+  let handbookSections = Array.from(matchedHandbookSections.values());
   const calendarEvents = Array.from(matchedCalendarEvents.values());
+
+  if (handbookSections.length > 0) {
+    const allFetchedSections = new Map<string, any>();
+    // Pre-populate with matched sections
+    handbookSections.forEach(s => allFetchedSections.set(s.id, s));
+
+    // 4a. Fetch ALL ancestor sections recursively for context & path resolution
+    let parentIdsToFetch = handbookSections
+      .map(s => s.parent_id)
+      .filter((id): id is string => id !== null && !allFetchedSections.has(id));
+
+    while (parentIdsToFetch.length > 0) {
+      const { data: parents } = await supabase
+        .from('handbook_sections')
+        .select('id, parent_id, title, content')
+        .in('id', parentIdsToFetch)
+        .eq('is_archived', false)
+        .is('deleted_at', null);
+
+      if (!parents || parents.length === 0) break;
+
+      parents.forEach((parent: any) => {
+        allFetchedSections.set(parent.id, parent);
+      });
+
+      // Find next level of parents
+      parentIdsToFetch = parents
+        .map((p: any) => p.parent_id)
+        .filter((id: string | null): id is string => id !== null && !allFetchedSections.has(id));
+    }
+
+    // 4b. Fetch child sections for directly matched sections
+    const sectionIds = handbookSections.map(s => s.id);
+    const { data: children } = await supabase
+      .from('handbook_sections')
+      .select('id, parent_id, title, content')
+      .in('parent_id', sectionIds)
+      .eq('is_archived', false)
+      .is('deleted_at', null);
+
+    if (children && children.length > 0) {
+      children.forEach((child: any) => {
+        if (!allFetchedSections.has(child.id)) {
+          allFetchedSections.set(child.id, child);
+        }
+      });
+    }
+
+    // Helper to recursively build full hierarchical path
+    const buildPath = (sectionId: string): string => {
+      const pathTitles: string[] = [];
+      let current = allFetchedSections.get(sectionId);
+      while (current) {
+        pathTitles.unshift(current.title);
+        current = current.parent_id ? allFetchedSections.get(current.parent_id) : null;
+      }
+      return pathTitles.join(' - ');
+    };
+
+    // Update all sections with their full structural title path
+    const updatedSections = Array.from(allFetchedSections.values()).map(s => ({
+      ...s,
+      title: buildPath(s.id)
+    }));
+
+    handbookSections = updatedSections;
+  }
 
   if (handbookSections.length > 0 || calendarEvents.length > 0) {
     return {
-      type: handbookSections.length > 0 ? 'handbook' : 'calendar',
-      data: handbookSections.length > 0 ? handbookSections : calendarEvents,
+      handbookSections,
+      calendarEvents,
       keywords: matchedKeywords
     };
   }
@@ -224,25 +331,124 @@ export const generateKeywords = async (title: string, body: string): Promise<str
   }
 };
 
+const checkPleasantries = (content: string): string | null => {
+  const normalized = normalizeMessage(content);
+  
+  const greetings = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'yo'];
+  const thanks = ['thank you', 'thanks', 'thank', 'salamat', 'ty', 'thankyou', 'thank you so much'];
+  const closures = ['bye', 'goodbye', 'bye bye', 'exit', 'quit'];
+  const acknowledgments = ['ok', 'okay', 'sure', 'noted'];
+
+  if (thanks.includes(normalized) || thanks.some(t => normalized === t || normalized.startsWith(t + ' '))) {
+    return "You're very welcome! 😊 Let me know if you have any other questions about DYCI.";
+  }
+  
+  if (greetings.includes(normalized) || greetings.some(g => normalized === g || normalized.startsWith(g + ' '))) {
+    return "Hello! 👋 How can I help you today? You can ask me about school policies, handbook guidelines, or calendar events.";
+  }
+
+  if (closures.includes(normalized)) {
+    return "Goodbye! Have a great day ahead! 👋";
+  }
+
+  if (acknowledgments.includes(normalized)) {
+    return "Got it! Let me know if there's anything else I can assist you with. 👍";
+  }
+
+  return null;
+};
+
 export const handleIncomingMessage = async (conversationId: string, content: string) => {
+  const normalized = content.toLowerCase().trim();
+  const adminTriggers = ['chat with admin', 'human', 'talk to human', 'agent', 'support staff', 'connect to admin'];
+
+  // 1. Direct Escalation Check (bypassing pleasantries and keyword scanner)
+  if (adminTriggers.includes(normalized)) {
+    await supabase
+      .from('conversations')
+      .update({ 
+        status: 'open',
+        assigned_admin_id: null,
+        last_student_message_at: new Date().toISOString()
+      })
+      .eq('id', conversationId);
+
+    const transferMsg = "🤝 **Connecting you to a staff member.** Please wait a moment while I transfer this inquiry...";
+    await safeInsert('chat_messages', {
+      conversation_id: conversationId,
+      sender_id: null,
+      message: transferMsg,
+      is_auto_reply: true
+    });
+
+    return { type: 'escalation', content: transferMsg };
+  }
+
+  // 2. Active Admin Check with 5-Minute Inactivity Safety Net
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('status, assigned_admin_id')
+    .eq('id', conversationId)
+    .maybeSingle();
+
+  if (conv && conv.status === 'open' && conv.assigned_admin_id) {
+    const { data: lastMessages } = await supabase
+      .from('chat_messages')
+      .select('sender_id, created_at')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (lastMessages && lastMessages.length > 0) {
+      const lastMsg = lastMessages[0];
+      
+      // If the last message was sent by the student, calculate elapsed idle time
+      if (lastMsg.sender_id !== null) {
+        const lastMsgTime = new Date(lastMsg.created_at).getTime();
+        const elapsedMinutes = (Date.now() - lastMsgTime) / 60000;
+        
+        // If student has been waiting for less than 5 minutes, bypass the bot
+        if (elapsedMinutes < 5) {
+          return { type: 'bypass_active_admin' };
+        }
+        console.log('[ChatBot] Admin inactive for 5+ minutes. Reactivating chatbot.');
+      } else {
+        // Last message was from admin/system; admin is active, bypass bot
+        return { type: 'bypass_active_admin' };
+      }
+    }
+  }
+
+  // Check for conversational pleasantries first to avoid unnecessary admin escalation
+  const pleasantryReply = checkPleasantries(content);
+  if (pleasantryReply) {
+    await safeInsert('chat_messages', {
+      conversation_id: conversationId,
+      sender_id: null,
+      message: pleasantryReply,
+      is_auto_reply: true
+    });
+    return { type: 'pleasantry_reply', content: pleasantryReply };
+  }
+
   // 1. Check for keyword match - now returns ALL matching sources
   const match = await findMatch(content);
 
-  if (match && match.data.length > 0) {
+  if (match && (match.handbookSections.length > 0 || match.calendarEvents.length > 0)) {
     // Build combined source data from ALL matched sections/events
     let combinedSourceData = '';
-    let sourceLabel = '';
+    const sourceLabels: string[] = [];
 
-    if (match.type === 'handbook') {
-      const sections = match.data as any[];
-      sourceLabel = `Handbook Sections (${match.keywords.join(', ')})`;
-      combinedSourceData = sections.map((s) => 
+    if (match.handbookSections.length > 0) {
+      sourceLabels.push(`Handbook Sections (${match.keywords.filter(k => k !== 'calendar').join(', ')})`);
+      combinedSourceData += `--- HANDBOOK SECTIONS ---\n` + match.handbookSections.map((s) => 
         `SECTION: "${s.title}"\n${s.content}`
-      ).join('\n\n---\n\n');
-    } else if (match.type === 'calendar') {
-      const events = match.data as any[];
-      sourceLabel = `Academic Calendar (${match.keywords.join(', ')})`;
-      combinedSourceData = events.map((e, idx) => {
+      ).join('\n\n---\n\n') + '\n\n';
+    }
+
+    if (match.calendarEvents.length > 0) {
+      sourceLabels.push(`Academic Calendar`);
+      combinedSourceData += `--- CALENDAR EVENTS ---\n` + match.calendarEvents.map((e, idx) => {
         const parts = e.date.split('-');
         let dateStr = e.date;
         if (parts.length === 3) {
@@ -253,13 +459,23 @@ export const handleIncomingMessage = async (conversationId: string, content: str
           }
         }
         return `[${idx + 1}] ${e.title} - ${dateStr} (${e.type})`;
-      }).join('\n');
+      }).join('\n') + '\n\n';
     }
+
+    const sourceLabel = sourceLabels.join(' & ');
 
     if (combinedSourceData) {
       // Use AI to synthesize answer from ALL matched sources (no web tools)
       const summaryReply = await getSummarizedResponse(content, combinedSourceData, sourceLabel, match.keywords);
-      const botReply = summaryReply || formatDefaultReply(sourceLabel, match.data, match.type);
+      let botReply = summaryReply || formatDefaultReply(sourceLabel, match.handbookSections, match.calendarEvents);
+
+      // Append references/source location info if matched handbook
+      if (match.handbookSections.length > 0 && summaryReply) {
+        const uniqueTitles = Array.from(new Set(match.handbookSections.map((s: any) => s.title)));
+        if (uniqueTitles.length > 0) {
+          botReply += `\n\n📖 **References from Handbook:**\n` + uniqueTitles.map(t => `• **${t}**`).join('\n');
+        }
+      }
 
       await safeInsert('chat_messages', {
         conversation_id: conversationId,
@@ -295,16 +511,18 @@ export const handleIncomingMessage = async (conversationId: string, content: str
 };
 
 // Format default reply when AI summary fails
-const formatDefaultReply = (sourceLabel: string, data: any[], type: 'handbook' | 'calendar'): string => {
-  if (type === 'handbook') {
-    const sections = data.slice(0, 3); // Max 3 sections in default reply
-    const sectionsText = sections.map(s => `**${s.title}**\n${s.content.substring(0, 300)}${s.content.length > 300 ? '...' : ''}`).join('\n\n');
-    return `📚 **${sourceLabel}**\n\nI found relevant information:\n\n${sectionsText}\n\n*If this doesn't fully answer your question, please type more details.*`;
-  } else {
-    const events = data.slice(0, 5); // Max 5 events
-    const eventsText = events.map((e: any) => `• **${e.title}** - ${new Date(e.date).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}`).join('\n');
-    return `📅 **${sourceLabel}**\n\nI found these events:\n\n${eventsText}\n\n*Check the Calendar page for the full schedule.*`;
+const formatDefaultReply = (sourceLabel: string, handbookSections: any[], calendarEvents: any[]): string => {
+  let reply = `📚 **${sourceLabel}**\n\nI found relevant information:\n\n`;
+  if (handbookSections.length > 0) {
+    const sectionsText = handbookSections.slice(0, 2).map(s => `**${s.title}**\n${s.content.substring(0, 250)}${s.content.length > 250 ? '...' : ''}`).join('\n\n');
+    reply += `**Handbook:**\n${sectionsText}\n\n`;
   }
+  if (calendarEvents.length > 0) {
+    const eventsText = calendarEvents.slice(0, 5).map((e: any) => `• **${e.title}** - ${new Date(e.date).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })} (${e.type})`).join('\n');
+    reply += `**Calendar Events:**\n${eventsText}\n\n`;
+  }
+  reply += `*If this doesn't fully answer your question, please type more details.*`;
+  return reply;
 };
 
 // AI function that ONLY summarizes provided data (no web tools)

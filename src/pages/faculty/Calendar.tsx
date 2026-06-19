@@ -20,56 +20,107 @@ const FacultyCalendar: React.FC = () => {
   const [currentMonth, setCurrentMonth] = useState<number>(today.getMonth())
   const [currentYear, setCurrentYear] = useState<number>(today.getFullYear())
   const [events, setEvents] = useState<CalendarEvent[]>([])
+  const [yearBounds, setYearBounds] = useState<{ startYear: number; endYear: number } | null>(null)
 
   const [isLocked, setIsLocked] = useState(true)
   const [lockReason, setLockReason] = useState<'conforme' | 'publication' | 'loading'>('loading')
 
-  // Fetch events and scope from backend
+  const [academicYears, setAcademicYears] = useState<any[]>([])
+  const [selectedYearId, setSelectedYearId] = useState<string>('')
+  const [systemActiveYearId, setSystemActiveYearId] = useState<string>('')
+
+  // 1. Initial check (Fetch Academic Years and current year config)
   useEffect(() => {
-    const loadData = async () => {
-      let scope = ''
-      let userConformeYear = ''
+    const initializeCalendar = async () => {
+      try {
+        const [{ data: settings }, { data: years }] = await Promise.all([
+          supabase.from('school_settings').select('current_academic_year_id').single(),
+          supabase.from('academic_years').select('*').order('year_name', { ascending: false })
+        ])
 
-      // 1. Get system settings
-      const { data: settings } = await supabase.from('school_settings').select('current_academic_year_id').single()
+        const systemYearId = settings?.current_academic_year_id || ''
+        setSystemActiveYearId(systemYearId)
 
-      const systemYearId = settings?.current_academic_year_id || ''
-      scope = systemYearId
-      userConformeYear = systemYearId // Faculty bypass Conforme check
-
-
-      // 2. CHECK VISIBILITY GATING
-      // For faculty, we only care about handbook publication
-      const { data: handbooks } = await supabase
-        .from('handbooks')
-        .select('id')
-        .eq('academic_year_id', scope)
-        .eq('status', 'published')
-        .limit(1)
-
-      if (!handbooks || handbooks.length === 0) {
-        setLockReason('publication')
-        setIsLocked(true)
-        return
-      }
-
-      setIsLocked(false)
-
-      // 3. Fetch events (Active only)
-      const { data, error } = await supabase
-        .from('calendar_events')
-        .select('*')
-        .eq('academic_year_id', scope)
-        .is('deleted_at', null)
-        
-      if (error) {
-        console.error('Error fetching events:', error)
-      } else if (data) {
-        setEvents(data)
+        if (years) {
+          setAcademicYears(years)
+          const current = years.find(y => y.id === systemYearId) || years.find(y => y.is_current)
+          if (current) {
+            setSelectedYearId(current.id)
+          } else if (years.length > 0) {
+            setSelectedYearId(years[0].id)
+          }
+        }
+      } catch (err) {
+        console.error('Error initializing faculty calendar:', err)
       }
     }
-    loadData()
+    initializeCalendar()
   }, [user])
+
+  // 2. Load events and bounds whenever selectedYearId changes
+  useEffect(() => {
+    const loadEventsForYear = async () => {
+      if (!selectedYearId) return
+
+      try {
+        // A. Handbook Gating for the selected year
+        const { data: handbooks } = await supabase
+          .from('handbooks')
+          .select('id')
+          .eq('academic_year_id', selectedYearId)
+          .eq('status', 'published')
+          .limit(1)
+
+        if (!handbooks || handbooks.length === 0) {
+          setLockReason('publication')
+          setIsLocked(true)
+          return
+        }
+
+        setIsLocked(false)
+
+        // B. Fetch active year name to set bounds
+        const { data: activeYear } = await supabase
+          .from('academic_years')
+          .select('year_name')
+          .eq('id', selectedYearId)
+          .single()
+
+        if (activeYear) {
+          const parts = activeYear.year_name.split('-')
+          if (parts.length === 2) {
+            const sy = parseInt(parts[0])
+            const ey = parseInt(parts[1])
+            if (!isNaN(sy) && !isNaN(ey)) {
+              setYearBounds({ startYear: sy, endYear: ey })
+              
+              // Set view to June of selected startYear
+              setCurrentMonth(5) // June
+              setCurrentYear(sy)
+              setSelectedDate(`${sy}-06-01`)
+            }
+          }
+        }
+
+        // C. Fetch events for the selected year
+        const { data: eventsData, error } = await supabase
+          .from('calendar_events')
+          .select('*')
+          .eq('academic_year_id', selectedYearId)
+          .is('deleted_at', null)
+
+        if (error) {
+          console.error('Error fetching calendar events:', error)
+        } else if (eventsData) {
+          setEvents(eventsData)
+        }
+      } catch (err) {
+        console.error('Error loading events:', err)
+      }
+    }
+
+    loadEventsForYear()
+  }, [selectedYearId])
 
   const getEventsForDate = (iso: string) =>
     events.filter((e: CalendarEvent) => e.date === iso)
@@ -96,6 +147,9 @@ const FacultyCalendar: React.FC = () => {
   }
 
   const prevMonth = () => {
+    if (yearBounds && currentYear === yearBounds.startYear && currentMonth === 5) {
+      return
+    }
     if (currentMonth === 0) {
       setCurrentMonth(11)
       setCurrentYear((y: number) => y - 1)
@@ -105,6 +159,9 @@ const FacultyCalendar: React.FC = () => {
   }
 
   const nextMonth = () => {
+    if (yearBounds && currentYear === yearBounds.endYear && currentMonth === 4) {
+      return
+    }
     if (currentMonth === 11) {
       setCurrentMonth(0)
       setCurrentYear((y: number) => y + 1)
@@ -142,11 +199,31 @@ const FacultyCalendar: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="unified-header">
-        <div className="unified-header-content">
-          <h1 className="unified-header-title">Academic Calendar</h1>
-          <p className="unified-header-subtitle">
-            View academic milestones and manage your teaching schedule.
-          </p>
+        <div className="unified-header-content flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h1 className="unified-header-title">Academic Calendar</h1>
+            <p className="unified-header-subtitle">
+              View academic milestones and manage your teaching schedule.
+            </p>
+          </div>
+          {academicYears.length > 0 && (
+            <div className="flex items-center gap-2 bg-blue-900/40 rounded-full px-3 py-1 border border-white/10">
+              <span className="text-[9px] font-bold text-blue-200 uppercase tracking-wider">Year:</span>
+              <select
+                value={selectedYearId}
+                onChange={async (e) => {
+                  setSelectedYearId(e.target.value)
+                }}
+                className="bg-transparent text-white text-[10px] font-bold focus:outline-none cursor-pointer"
+              >
+                {academicYears.map(year => (
+                  <option key={year.id} value={year.id} className="text-slate-900">
+                    {year.year_name} {year.id === systemActiveYearId ? '(Current)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </header>
 
@@ -189,15 +266,28 @@ const FacultyCalendar: React.FC = () => {
                   <div className="flex items-center bg-white rounded-lg border border-slate-200 p-1 shadow-sm">
                     <button
                       onClick={prevMonth}
-                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-600"
+                      disabled={yearBounds ? currentYear === yearBounds.startYear && currentMonth === 5 : false}
+                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-slate-600"
                     >
                       <span className="text-lg">←</span>
                     </button>
                     <button
                       onClick={() => {
                         const d = new Date()
-                        setCurrentMonth(d.getMonth())
-                        setCurrentYear(d.getFullYear())
+                        if (yearBounds) {
+                          const startBound = new Date(yearBounds.startYear, 5, 1)
+                          const endBound = new Date(yearBounds.endYear, 4, 31)
+                          if (d >= startBound && d <= endBound) {
+                            setCurrentMonth(d.getMonth())
+                            setCurrentYear(d.getFullYear())
+                          } else {
+                            setCurrentMonth(5) // June
+                            setCurrentYear(yearBounds.startYear)
+                          }
+                        } else {
+                          setCurrentMonth(d.getMonth())
+                          setCurrentYear(d.getFullYear())
+                        }
                       }}
                       className="px-3 text-xs font-bold text-slate-500 hover:text-blue-600 transition-colors"
                     >
@@ -205,7 +295,8 @@ const FacultyCalendar: React.FC = () => {
                     </button>
                     <button
                       onClick={nextMonth}
-                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-600"
+                      disabled={yearBounds ? currentYear === yearBounds.endYear && currentMonth === 4 : false}
+                      className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-slate-600"
                     >
                       <span className="text-lg">→</span>
                     </button>
@@ -216,23 +307,51 @@ const FacultyCalendar: React.FC = () => {
                   <select
                     className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-blue-600/20 outline-none transition-all"
                     value={currentMonth}
-                    onChange={(e) => setCurrentMonth(Number(e.target.value))}
-                  >
-                    {monthNames.map((month, index) => (
-                      <option key={month} value={index}>
-                        {month}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    className="w-24 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-blue-600/20 outline-none transition-all"
-                    value={currentYear}
                     onChange={(e) => {
-                      const parsedYear = Number(e.target.value)
-                      if (!Number.isNaN(parsedYear)) setCurrentYear(parsedYear)
+                      const newMonth = Number(e.target.value)
+                      setCurrentMonth(newMonth)
                     }}
-                  />
+                  >
+                    {monthNames.map((month, index) => {
+                      if (yearBounds) {
+                        if (currentYear === yearBounds.startYear && index < 5) return null
+                        if (currentYear === yearBounds.endYear && index > 4) return null
+                      }
+                      return (
+                        <option key={month} value={index}>
+                          {month}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  {yearBounds ? (
+                    <select
+                      className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-blue-600/20 outline-none transition-all"
+                      value={currentYear}
+                      onChange={(e) => {
+                        const newYear = Number(e.target.value)
+                        setCurrentYear(newYear)
+                        if (newYear === yearBounds.startYear && currentMonth < 5) {
+                          setCurrentMonth(5)
+                        } else if (newYear === yearBounds.endYear && currentMonth > 4) {
+                          setCurrentMonth(4)
+                        }
+                      }}
+                    >
+                      <option value={yearBounds.startYear}>{yearBounds.startYear}</option>
+                      <option value={yearBounds.endYear}>{yearBounds.endYear}</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="number"
+                      className="w-24 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-blue-600/20 outline-none transition-all"
+                      value={currentYear}
+                      onChange={(e) => {
+                        const parsedYear = Number(e.target.value)
+                        if (!Number.isNaN(parsedYear)) setCurrentYear(parsedYear)
+                      }}
+                    />
+                  )}
                 </div>
               </div>
 

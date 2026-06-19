@@ -132,7 +132,7 @@ const StaffLayout: React.FC<StaffLayoutProps> = ({ children }) => {
                 <span className="text-[10px] font-semibold tracking-[0.25em] text-blue-900 uppercase">
                   DYCI CONNECT
                 </span>
-                <span className="text-[10px] text-slate-400">Staff portal</span>
+                <span className="text-[10px] text-slate-400">Employee portal</span>
               </div>
             )}
           </div>
@@ -217,7 +217,7 @@ const StaffLayout: React.FC<StaffLayoutProps> = ({ children }) => {
                   <span className="text-[10px] font-semibold tracking-[0.25em] text-blue-900 uppercase">
                     DYCI CONNECT
                   </span>
-                  <span className="text-[10px] text-slate-400">Staff portal</span>
+                  <span className="text-[10px] text-slate-400">Employee portal</span>
                 </div>
               </div>
             </div>

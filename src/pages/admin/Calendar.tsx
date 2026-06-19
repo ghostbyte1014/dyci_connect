@@ -3,6 +3,8 @@ import toast from 'react-hot-toast'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../contexts/AuthContext'
 import { generateKeywords } from '../../utils/chatLogic'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   setAcademicYearAsCurrent,
   fetchAcademicYears,
@@ -121,6 +123,13 @@ const Calendar: React.FC = () => {
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [showAddConfirmModal, setShowAddConfirmModal] = useState(false)
+
+  // EXPORT PDF OPTIONS
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
+  const [exportScope, setExportScope] = useState<'year' | 'month' | 'range'>('year')
+  const [exportMonth, setExportMonth] = useState<number>(6) // Default to July
+  const [exportStartDate, setExportStartDate] = useState<string>('')
+  const [exportEndDate, setExportEndDate] = useState<string>('')
 
   const nextAcademicYearName = useMemo(() => {
     if (academicYears.length === 0) return '2025-2026'
@@ -552,50 +561,119 @@ const Calendar: React.FC = () => {
     toast.success('Event updated')
   }
 
-  const handleExportICS = () => {
-    const yearEvents = events.filter(e => e.academic_year_id === selectedYearId && !e.deleted_at)
-    if (yearEvents.length === 0) {
-      toast.error('No events to export for the current academic year')
+  const handleExportPDF = async () => {
+    // 1. Fetch the exporter's name
+    let exporterName = user?.email || 'Admin'
+    if (user?.id) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('first_name, last_name')
+        .eq('id', user.id)
+        .single()
+      if (profile) {
+        exporterName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || user.email || 'Admin'
+      }
+    }
+
+    let filteredEvents = events.filter(e => e.academic_year_id === selectedYearId && !e.deleted_at)
+
+    if (exportScope === 'month') {
+      filteredEvents = filteredEvents.filter(e => {
+        const d = new Date(e.date)
+        return d.getMonth() === exportMonth
+      })
+    } else if (exportScope === 'range') {
+      if (!exportStartDate || !exportEndDate) {
+        toast.error('Please select start and end dates')
+        return
+      }
+      filteredEvents = filteredEvents.filter(e => e.date >= exportStartDate && e.date <= exportEndDate)
+    }
+
+    if (filteredEvents.length === 0) {
+      toast.error('No events found for the selected scope')
       return
     }
 
-    const lines = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//DYCI Connect//Academic Calendar//EN',
-      'CALSCALE:GREGORIAN',
-      'METHOD:PUBLISH',
-    ]
+    const sortedEvents = [...filteredEvents].sort((a, b) => a.date.localeCompare(b.date))
+    const doc = new jsPDF()
 
-    yearEvents.forEach(ev => {
-      // Format: 2025-07-01 -> 20250701
-      const dateStr = ev.date.replace(/-/g, '')
-      const uid = `${ev.id || Math.random().toString(36).substr(2, 9)}@dyci.edu`
-      const now = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
+    // Title / Header
+    doc.setFontSize(18)
+    doc.text('DYCI Connect - Academic Calendar', 14, 20)
+    doc.setFontSize(10)
 
-      lines.push('BEGIN:VEVENT')
-      lines.push(`UID:${uid}`)
-      lines.push(`DTSTAMP:${now}`)
-      lines.push(`DTSTART;VALUE=DATE:${dateStr}`)
-      lines.push(`SUMMARY:${ev.title}`)
-      lines.push(`DESCRIPTION:Category: ${ev.type}`)
-      lines.push('END:VEVENT')
+    let scopeText = `Academic Year: ${globalAcademicYear}`
+    if (exportScope === 'month') {
+      scopeText += ` (Month: ${monthOptions[exportMonth]})`
+    } else if (exportScope === 'range') {
+      scopeText += ` (Range: ${new Date(exportStartDate).toLocaleDateString()} to ${new Date(exportEndDate).toLocaleDateString()})`
+    }
+
+    doc.text(scopeText, 14, 28)
+    doc.text(`Created by: ${exporterName}`, 14, 34)
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 40)
+
+    // Table Columns
+    const tableColumn = ["Date", "Event Title", "Type", "Description"]
+    
+    // Group events by month
+    const eventsByMonth: Record<string, CalendarEvent[]> = {}
+    sortedEvents.forEach(ev => {
+      const monthName = new Date(ev.date).toLocaleString('en-US', { month: 'long', year: 'numeric' })
+      if (!eventsByMonth[monthName]) eventsByMonth[monthName] = []
+      eventsByMonth[monthName].push(ev)
     })
 
-    lines.push('END:VCALENDAR')
+    let currentY = 46
 
-    const icsContent = lines.join('\r\n')
-    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `DYCI-Calendar-${globalAcademicYear}.ics`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    Object.entries(eventsByMonth).forEach(([monthName, monthEvents]) => {
+      // Check if we need a page break (e.g. if currentY is near the bottom of the page)
+      if (currentY > 250) {
+        doc.addPage()
+        currentY = 20
+      }
 
-    toast.success('ICS file exported successfully')
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(12)
+      doc.text(monthName, 14, currentY)
+      currentY += 4
+
+      const tableRows = monthEvents.map(ev => {
+        const formattedDate = new Date(ev.date).toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric'
+        })
+        const typeLabel = ev.type.charAt(0).toUpperCase() + ev.type.slice(1)
+        return [
+          formattedDate,
+          ev.title,
+          typeLabel,
+          ev.description || 'N/A'
+        ]
+      })
+
+      autoTable(doc, {
+         startY: currentY,
+         head: [tableColumn],
+         body: tableRows,
+         theme: 'striped',
+         headStyles: { fillColor: [43, 108, 176] }, // DYCI Blue / Nice Blue
+         styles: { fontSize: 9, cellPadding: 3 },
+         columnStyles: {
+           0: { cellWidth: 40 },
+           1: { cellWidth: 60 },
+           2: { cellWidth: 30 },
+           3: { cellWidth: 50 }
+         }
+      })
+
+      currentY = (doc as any).lastAutoTable.finalY + 12
+    })
+
+    doc.save(`DYCI-Calendar-${globalAcademicYear}.pdf`)
+    toast.success('Calendar PDF exported successfully')
   }
 
   return (
@@ -648,10 +726,14 @@ const Calendar: React.FC = () => {
             </div>
 
             <button
-              onClick={handleExportICS}
+              onClick={() => {
+                setExportMonth(currentMonth)
+                setExportScope('year')
+                setIsExportModalOpen(true)
+              }}
               className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-full text-[10px] font-bold uppercase tracking-wider transition-all border border-white/10 shadow-sm"
             >
-              Export ICS
+              Export PDF
             </button>
             <button
               onClick={() => setShowArchived(!showArchived)}
@@ -733,21 +815,46 @@ const Calendar: React.FC = () => {
                     value={currentMonth}
                     onChange={(e) => setCurrentMonth(Number(e.target.value))}
                   >
-                    {monthOptions.map((month, index) => (
-                      <option key={month} value={index}>
-                        {month}
-                      </option>
-                    ))}
+                    {monthOptions.map((month, index) => {
+                      if (yearBounds) {
+                        if (currentYear === yearBounds.startYear && index < 5) return null
+                        if (currentYear === yearBounds.endYear && index > 4) return null
+                      }
+                      return (
+                        <option key={month} value={index}>
+                          {month}
+                        </option>
+                      )
+                    })}
                   </select>
-                  <input
-                    type="number"
-                    className="w-24 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-dyci-blue/20 outline-none transition-all"
-                    value={currentYear}
-                    onChange={(e) => {
-                      const parsedYear = Number(e.target.value)
-                      if (!Number.isNaN(parsedYear)) setCurrentYear(parsedYear)
-                    }}
-                  />
+                  {yearBounds ? (
+                    <select
+                      className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-dyci-blue/20 outline-none transition-all"
+                      value={currentYear}
+                      onChange={(e) => {
+                        const newYear = Number(e.target.value)
+                        setCurrentYear(newYear)
+                        if (newYear === yearBounds.startYear && currentMonth < 5) {
+                          setCurrentMonth(5)
+                        } else if (newYear === yearBounds.endYear && currentMonth > 4) {
+                          setCurrentMonth(4)
+                        }
+                      }}
+                    >
+                      <option value={yearBounds.startYear}>{yearBounds.startYear}</option>
+                      <option value={yearBounds.endYear}>{yearBounds.endYear}</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="number"
+                      className="w-24 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-700 focus:ring-2 focus:ring-dyci-blue/20 outline-none transition-all"
+                      value={currentYear}
+                      onChange={(e) => {
+                        const parsedYear = Number(e.target.value)
+                        if (!Number.isNaN(parsedYear)) setCurrentYear(parsedYear)
+                      }}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1444,6 +1551,104 @@ const Calendar: React.FC = () => {
               >
                 Confirm
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPORT OPTIONS MODAL */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity animate-in fade-in" onClick={() => setIsExportModalOpen(false)} />
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-xl p-6 relative z-10 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Export Calendar Options</h3>
+                <p className="text-xs text-slate-500 mt-1">Select scope and settings for PDF export</p>
+              </div>
+              <button
+                className="h-10 w-10 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-500 transition-all"
+                onClick={() => setIsExportModalOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Export Scope</label>
+                <select
+                  className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none"
+                  value={exportScope}
+                  onChange={(e) => setExportScope(e.target.value as 'year' | 'month' | 'range')}
+                >
+                  <option value="year">Whole School Year ({globalAcademicYear})</option>
+                  <option value="month">Specific Month</option>
+                  <option value="range">Custom Date Range</option>
+                </select>
+              </div>
+
+              {exportScope === 'month' && (
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Select Month</label>
+                  <select
+                    className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none"
+                    value={exportMonth}
+                    onChange={(e) => setExportMonth(Number(e.target.value))}
+                  >
+                    {monthOptions.map((month, index) => (
+                      <option key={month} value={index}>
+                        {month}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {exportScope === 'range' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Start Date</label>
+                    <input
+                      type="date"
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-dyci-blue/10 outline-none"
+                      value={exportStartDate}
+                      min={dateLimits.min}
+                      max={dateLimits.max}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">End Date</label>
+                    <input
+                      type="date"
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-dyci-blue/10 outline-none"
+                      value={exportEndDate}
+                      min={dateLimits.min}
+                      max={dateLimits.max}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-4">
+                <button
+                  onClick={() => setIsExportModalOpen(false)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    setIsExportModalOpen(false)
+                    await handleExportPDF()
+                  }}
+                  className="flex-1 py-3 bg-blue-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition-colors shadow-md"
+                >
+                  Export PDF
+                </button>
+              </div>
             </div>
           </div>
         </div>

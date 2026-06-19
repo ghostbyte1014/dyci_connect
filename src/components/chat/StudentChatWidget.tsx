@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import toast from 'react-hot-toast'
-import { FaMessage } from 'react-icons/fa6'
+import { FaMessage, FaExpand, FaCompress } from 'react-icons/fa6'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../contexts/AuthContext'
 import { handleIncomingMessage } from '../../utils/chatLogic'
@@ -18,9 +18,11 @@ interface ChatMessage {
 const StudentChatWidget: React.FC = () => {
   const { user } = useAuth()
   const [open, setOpen] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [assignedAdminId, setAssignedAdminId] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [initializing, setInitializing] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -53,13 +55,14 @@ const StudentChatWidget: React.FC = () => {
         // 1. Get all conversations where this student is a participant
         const { data: participationData } = await supabase
           .from('conversation_participants')
-          .select('conversation_id, conversations(status)')
+          .select('conversation_id, conversations(status, assigned_admin_id)')
           .eq('user_id', user.id)
           .order('joined_at', { ascending: false })
 
         const conversations = participationData?.map(p => ({
           id: p.conversation_id,
-          status: (p.conversations as any)?.status
+          status: (p.conversations as any)?.status,
+          assigned_admin_id: (p.conversations as any)?.assigned_admin_id
         })) || []
         
         const activeConv = conversations.find(c => c.status !== 'resolved')
@@ -69,6 +72,7 @@ const StudentChatWidget: React.FC = () => {
         // We'll create it on the first message if needed.
         if (currentId) {
           setConversationId(currentId)
+          setAssignedAdminId(activeConv?.assigned_admin_id || null)
         }
 
         // 3. Fetch all messages from all conversations to show history
@@ -157,6 +161,21 @@ const StudentChatWidget: React.FC = () => {
               })
             }
           )
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'conversations'
+            },
+            async (payload: any) => {
+              console.log('[Chat] Realtime Conversation UPDATE received:', payload)
+              const updatedConv = payload.new as any
+              if (currentId && updatedConv.id === currentId) {
+                setAssignedAdminId(updatedConv.assigned_admin_id || null)
+              }
+            }
+          )
           .subscribe((status) => {
             console.log('[Chat] Realtime subscription status:', status)
           })
@@ -177,6 +196,80 @@ const StudentChatWidget: React.FC = () => {
 
   const handleToggle = () => {
     setOpen((prev) => !prev)
+  }
+
+  const handleConnectAdmin = async () => {
+    if (!user) return
+    setSending(true)
+    try {
+      let activeId = conversationId
+
+      // 1. Create conversation if none active
+      if (!activeId) {
+        const { data: newConv, error: convError } = await supabase
+          .from('conversations')
+          .insert({ status: 'open' })
+          .select()
+          .single()
+        
+        if (convError) throw convError
+
+        if (newConv) {
+          activeId = newConv.id
+          
+          const { error: partError } = await supabase
+            .from('conversation_participants')
+            .insert({
+              conversation_id: activeId,
+              user_id: user.id,
+              p_role: 'student'
+            })
+          
+          if (partError) throw partError
+          setConversationId(activeId)
+        }
+      }
+
+      if (!activeId) throw new Error('Could not initialize conversation')
+
+      // 2. Insert student message requesting transfer
+      const { error: insertError } = await supabase
+        .from('chat_messages')
+        .insert({
+          conversation_id: activeId,
+          sender_id: user.id,
+          message: 'chat with admin'
+        })
+
+      if (insertError) throw insertError
+
+      // 3. Notify Admins and run handleIncomingMessage sequence
+      await notifyRole('academic_admin', 'New Support Message', `Student: ${user.user_metadata?.full_name || 'Anonymous Student'} requested to speak to an admin.`, '/admin/support')
+      await handleIncomingMessage(activeId, 'chat with admin')
+      
+      // Update local state by loading recent history
+      const { data: dbMessages } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('conversation_id', activeId)
+        .order('created_at', { ascending: true })
+
+      if (dbMessages) {
+        setMessages(dbMessages.map((m: any) => ({
+          id: m.id,
+          from: (m.sender_id === user.id ? 'student' : 'system') as 'student' | 'system',
+          text: m.message,
+          createdAt: m.created_at
+        })))
+      }
+      setAssignedAdminId(null)
+      toast.success('Escalated to human staff queue!')
+    } catch (err) {
+      console.error('Error connecting to admin:', err)
+      toast.error('Could not connect to administrator.')
+    } finally {
+      setSending(false)
+    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -281,7 +374,11 @@ const StudentChatWidget: React.FC = () => {
   return (
     <>
       {open && (
-        <div className="fixed bottom-20 right-4 z-40 w-80 max-w-[90vw] h-96 rounded-2xl bg-white shadow-xl border border-slate-200 flex flex-col overflow-hidden text-[11px] font-inter">
+        <div className={`fixed bottom-20 right-4 z-40 rounded-2xl bg-white shadow-xl border border-slate-200 flex flex-col overflow-hidden text-[11px] font-inter transition-all duration-300 ${
+          isExpanded
+            ? 'w-[500px] h-[600px] max-w-[95vw] max-h-[80vh]'
+            : 'w-80 h-96 max-w-[90vw]'
+        }`}>
           <div className="px-3 py-2 bg-blue-700 text-white flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold">Support chat</p>
@@ -290,13 +387,23 @@ const StudentChatWidget: React.FC = () => {
                 DYCI Assistant & Staff
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleToggle}
-              className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-[10px] transition-colors"
-            >
-              ×
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setIsExpanded((prev) => !prev)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-[10px] transition-colors"
+                title={isExpanded ? 'Minimize Chat' : 'Maximize Chat'}
+              >
+                {isExpanded ? <FaCompress className="h-3 w-3" /> : <FaExpand className="h-3 w-3" />}
+              </button>
+              <button
+                type="button"
+                onClick={handleToggle}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-sm font-semibold transition-colors"
+              >
+                ×
+              </button>
+            </div>
           </div>
 
           <div className="px-3 py-3 flex-1 overflow-y-auto space-y-3 bg-slate-50/50">
@@ -306,11 +413,17 @@ const StudentChatWidget: React.FC = () => {
                 <p className="text-[10px]">Loading history...</p>
               </div>
             ) : (
-              <>
-                {messages.length === 0 && (
+              <>                 {messages.length === 0 && (
                   <div className="flex justify-start">
                     <div className="rounded-2xl px-3 py-2 max-w-[85%] bg-white text-slate-800 border border-slate-200 rounded-bl-sm shadow-sm">
-                      <p>👋 Hello! I'm the DYCI Assistant. Ask me anything about school policies, enrollment, or requirements. If I can't find it in the handbook, I'll connect you to a admin!</p>
+                      <p>👋 Hello! I'm the DYCI Assistant. Ask me anything about school policies, enrollment, or requirements. If I can't find it in the handbook, I'll connect you to an agent!</p>
+                      <button
+                        type="button"
+                        onClick={handleConnectAdmin}
+                        className="mt-2 inline-flex items-center gap-1 bg-blue-50 text-blue-700 hover:bg-blue-100 font-semibold px-2 py-1 rounded-md text-[10px] transition-all focus:outline-none"
+                      >
+                        🤝 Chat with Agent
+                      </button>
                     </div>
                   </div>
                 )}
@@ -358,6 +471,28 @@ const StudentChatWidget: React.FC = () => {
             )}
             <div ref={messagesEndRef} />
           </div>
+
+          {!assignedAdminId && messages.length > 0 && (
+            <div className="px-3 py-1.5 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={handleConnectAdmin}
+                className="text-[10px] text-blue-700 hover:text-blue-800 font-semibold flex items-center gap-1 focus:outline-none"
+                disabled={sending}
+              >
+                🤝 Speak to an Agent
+              </button>
+            </div>
+          )}
+
+          {assignedAdminId && (
+            <div className="px-3 py-1.5 bg-emerald-50 border-t border-slate-100 flex items-center justify-between text-[9px] font-semibold text-emerald-800 tracking-wide uppercase">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                Connected to Agent
+              </span>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="border-t border-slate-100 px-3 py-2 bg-white">
             <div className="flex items-center gap-2">

@@ -5,7 +5,7 @@ import {
   FaChevronRight,
 } from 'react-icons/fa'
 import { fetchHandbookTree, type HandbookNode, buildTree } from '../../lib/api/handbook'
-import { fetchHandbooks } from '../../lib/api/handbookWorkflow'
+import { fetchPublishedHandbook } from '../../lib/api/handbookWorkflow'
 import { searchHandbook, findPathToNode, type HandbookSearchHit } from '../../lib/handbookSearch'
 import HandbookSearchToolbar from '../../components/handbook/HandbookSearchToolbar'
 import HandbookSearchResults from '../../components/handbook/HandbookSearchResults'
@@ -13,6 +13,8 @@ import { DashboardSkeleton } from '../../components/ui/Skeleton'
 import { handbookData } from '../../data/handbookData'
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { useAuth } from '../../contexts/AuthContext'
+
+import toast from 'react-hot-toast'
 
 // Build a fallback tree from static data so the page works without Supabase
 const buildFallback = (): HandbookNode[] => {
@@ -60,25 +62,73 @@ const Handbook: React.FC = () => {
   useEffect(() => {
     if (!isReading || !activeNode || !isSupabaseConfigured || !user?.id) return;
 
+    let viewId: string | null = null;
     const startTime = Date.now();
     const nodeId = activeNode.id;
+
+    // Log view immediately on entry
+    const logImmediately = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('handbook_views')
+          .insert({
+            user_id: user.id,
+            section_id: nodeId,
+            duration_seconds: 0
+          })
+          .select('id')
+          .maybeSingle();
+
+        if (error) {
+          console.error('[handbook_views insert]', error.message, error.details);
+          toast.error(`Log fail: ${error.message}`);
+        } else if (data) {
+          viewId = (data as any).id;
+          toast.success('Reading session started');
+        }
+      } catch (err: any) {
+        console.error('[handbook_views insert exception]', err);
+        toast.error(`Log exception: ${err.message || err}`);
+      }
+    };
+
+    logImmediately();
 
     return () => {
       const endTime = Date.now();
       const durationSeconds = Math.round((endTime - startTime) / 1000);
 
-      // Only log if they stayed for more than 1 second to filter out quick clicks
       if (durationSeconds >= 1) {
-        supabase
-          .from('handbook_views')
-          .insert({
-            user_id: user.id,
-            section_id: nodeId,
-            duration_seconds: durationSeconds
-          })
-          .then(({ error }) => {
-            if (error) console.error('[handbook_views insert]', error.message, error.details);
-          });
+        if (viewId) {
+          // Update the existing view record with the final duration
+          supabase
+            .from('handbook_views')
+            .update({ duration_seconds: durationSeconds })
+            .eq('id', viewId)
+            .then(({ error }) => {
+              if (error) {
+                console.error('[handbook_views update]', error.message);
+              } else {
+                toast.success(`You spent ${durationSeconds} seconds reading this section.`);
+              }
+            });
+        } else {
+          // Fallback if the initial insert didn't finish returning the ID in time
+          supabase
+            .from('handbook_views')
+            .insert({
+              user_id: user.id,
+              section_id: nodeId,
+              duration_seconds: durationSeconds
+            })
+            .then(({ error }) => {
+              if (error) {
+                console.error('[handbook_views fallback insert]', error.message);
+              } else {
+                toast.success(`You spent ${durationSeconds} seconds reading this section.`);
+              }
+            });
+        }
       }
     };
   }, [isReading, activeNode?.id, user?.id]);
@@ -88,22 +138,21 @@ const Handbook: React.FC = () => {
     let cancelled = false
     const load = async () => {
       setLoading(true)
-      // First fetch available handbooks to get a default handbook ID
-      const { data: handbooks, error: handbooksError } = await fetchHandbooks()
+      // Fetch only published handbook
+      const { data: publishedHandbook, error: handbookError } = await fetchPublishedHandbook()
       
-      if (handbooksError || !handbooks || handbooks.length === 0) {
-        // No handbooks available, use fallback
+      if (handbookError || !publishedHandbook) {
+        // No handbook available, use fallback
         if (!cancelled) {
           setTree(buildFallback())
-          if (handbooksError) setError('Could not connect to database - showing cached data.')
+          if (handbookError) setError('Could not connect to database - showing cached data.')
           setLoading(false)
         }
         return
       }
 
-      // Use the first (most recent) handbook
-      const handbookId = handbooks[0].id
-      const { data, error } = await fetchHandbookTree(handbookId)
+      // Use the published handbook
+      const { data, error } = await fetchHandbookTree(publishedHandbook.id)
       
       if (!cancelled) {
         if (error || !data || data.length === 0) {

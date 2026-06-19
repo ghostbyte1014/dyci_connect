@@ -58,6 +58,7 @@ export interface Handbook {
   academic_year_id: string
   academic_years?: {
     year_name: string
+    is_current?: boolean
   }
   status: HandbookStatus
   publish_at: string | null
@@ -291,18 +292,41 @@ async function notifyAssignedL2(sectionId: string, message: string, actionUrl: s
 export async function fetchHandbooks() {
   const { data, error } = await supabase
     .from('handbooks')
-    .select('*, academic_years(year_name)')
+    .select('*, academic_years(year_name, is_current)')
     .order('updated_at', { ascending: false })
   return { data: (data as Handbook[] | null) ?? null, error: error?.message ?? null }
 }
 
 export async function fetchPublishedHandbook(): Promise<{ data: Handbook | null; error: string | null }> {
+  // 1. Get current academic year ID from academic_years where is_current is true
+  const { data: currentYear, error: ayError } = await supabase
+    .from('academic_years')
+    .select('id')
+    .eq('is_current', true)
+    .maybeSingle()
+
+  let ayId = currentYear?.id
+
+  if (!ayId) {
+    // Fallback: Get current academic year ID from school_settings
+    const { data: settings } = await supabase
+      .from('school_settings')
+      .select('current_academic_year_id')
+      .maybeSingle()
+
+    ayId = settings?.current_academic_year_id
+  }
+
+  if (!ayId) {
+    return { data: null, error: 'No active academic year found.' }
+  }
+
+  // 2. Fetch the published handbook for the active academic year
   const { data, error } = await supabase
     .from('handbooks')
     .select('*, academic_years(year_name)')
     .eq('status', 'published')
-    .order('published_at', { ascending: false })
-    .limit(1)
+    .eq('academic_year_id', ayId)
     .maybeSingle()
 
   if (error) return { data: null, error: error.message }
@@ -449,12 +473,30 @@ export async function replaceHandbookSections(handbookId: string, sections: Hand
 
 export async function assignSectionToDepartments(sectionId: string, positions: ApproverPosition[]) {
   // Clear old assignments
-  await supabase
+  const { error: deleteError } = await supabase
     .from('handbook_approval_requirements')
     .delete()
     .eq('handbook_section_id', sectionId)
 
-  if (positions.length === 0) return { error: null }
+  if (deleteError) return { error: deleteError.message }
+
+  if (positions.length === 0) {
+    // If no positions are assigned and the section is currently in dept_review, transition it to dept_approved
+    const { data: section } = await supabase
+      .from('handbook_sections')
+      .select('status')
+      .eq('id', sectionId)
+      .single()
+
+    if (section && section.status === 'dept_review') {
+      const { error: updateError } = await supabase
+        .from('handbook_sections')
+        .update({ status: 'dept_approved', current_level: 3 })
+        .eq('id', sectionId)
+      if (updateError) return { error: updateError.message }
+    }
+    return { error: null }
+  }
 
   const rows = positions.map((p) => ({
     handbook_section_id: sectionId,
@@ -883,10 +925,15 @@ export async function approveHandbookAtLevel(
   await supabase
     .from('handbooks')
     .update({
-      status: 'approved_by_executive',
       l3_approved_at: now.toISOString()
     })
     .eq('id', handbookId)
+
+  // Automatically transition all sections to 'dept_approved' (Level 3) when executive approves
+  await supabase
+    .from('handbook_sections')
+    .update({ status: 'dept_approved', current_level: 3 })
+    .eq('handbook_id', handbookId)
 
   await notifyAdmins(`Final Approval: The handbook has been approved by ${approverLabel(position)}.`, '/admin/cms')
 
@@ -942,11 +989,17 @@ export async function publishHandbookNow(handbookId: string) {
     .from('handbooks')
     .update(waitingForDate
       ? { status: 'pending_approval' }
-      : { published_at: now.toISOString(), status: 'published' }
+      : { published_at: now.toISOString(), status: 'published', is_archived: false }
     )
     .eq('id', handbookId)
 
   if (!waitingForDate && !error) {
+    // Archive other handbooks by setting is_archived = true
+    await supabase
+      .from('handbooks')
+      .update({ is_archived: true })
+      .neq('id', handbookId)
+
     await logForensicActivity('UPDATE', 'handbooks', handbookId, null, {
       status: 'published'
     })

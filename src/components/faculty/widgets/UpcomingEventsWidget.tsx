@@ -16,6 +16,7 @@ const UpcomingEventsWidget: React.FC = () => {
   const { user } = useAuth()
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [isLocked, setIsLocked] = useState(false)
 
   useEffect(() => {
     fetchUpcomingEvents()
@@ -25,6 +26,31 @@ const UpcomingEventsWidget: React.FC = () => {
     try {
       if (!user?.id) return
 
+      // 1. Get system settings
+      const { data: settings } = await supabase
+        .from('school_settings')
+        .select('current_academic_year_id')
+        .single()
+
+      const currentYearId = settings?.current_academic_year_id || ''
+
+      // 2. CHECK VISIBILITY GATING (For faculty/staff, we only care about handbook publication)
+      const { data: handbooks } = await supabase
+        .from('handbooks')
+        .select('id')
+        .eq('academic_year_id', currentYearId)
+        .eq('status', 'published')
+        .limit(1)
+
+      if (!handbooks || handbooks.length === 0) {
+        setIsLocked(true)
+        setEvents([])
+        return
+      }
+
+      setIsLocked(false)
+
+      // 3. Fetch events (Active only) for the current month
       const now = new Date()
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0]
@@ -32,6 +58,8 @@ const UpcomingEventsWidget: React.FC = () => {
       const { data, error } = await supabase
         .from('calendar_events')
         .select('id, title, date, type, description')
+        .eq('academic_year_id', currentYearId)
+        .is('deleted_at', null)
         .gte('date', startOfMonth)
         .lte('date', endOfMonth)
         .order('date', { ascending: true })
@@ -100,7 +128,17 @@ const UpcomingEventsWidget: React.FC = () => {
         </Link>
       </div>
 
-      {events.length === 0 ? (
+      {isLocked ? (
+        <div className="text-center py-6">
+          <div className="w-12 h-12 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-3">
+            <span className="text-slate-400">🔒</span>
+          </div>
+          <p className="text-sm font-semibold text-slate-800">Calendar Locked</p>
+          <p className="text-xs text-slate-500 mt-1 leading-relaxed px-4">
+            The academic calendar for this year has not been published yet.
+          </p>
+        </div>
+      ) : events.length === 0 ? (
         <div className="text-center py-6">
           <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
             <FaCalendarAlt className="text-slate-400 text-xl" />

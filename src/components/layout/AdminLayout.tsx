@@ -18,6 +18,7 @@ import {
   FaHistory,
   FaVideo,
   FaSitemap,
+  FaExclamationTriangle,
 } from 'react-icons/fa'
 import { MdSpaceDashboard, MdSettings } from "react-icons/md";
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
@@ -38,6 +39,49 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
+  const [pendingNavigation, setPendingNavigation] = useState<{ path: string; isSignOut?: boolean } | null>(null)
+
+  const handleConfirmNavigation = async () => {
+    if (!pendingNavigation) return
+    const saveCb = (window as any).cmsSaveCallback
+    if (typeof saveCb === 'function') {
+      try {
+        await saveCb()
+      } catch (e) {
+        console.error('Save callback failed:', e)
+      }
+    }
+    ;(window as any).cmsIsDirty = false
+    
+    if (pendingNavigation.isSignOut) {
+      await signOut()
+      navigate('/login')
+    } else {
+      navigate(pendingNavigation.path)
+    }
+    setPendingNavigation(null)
+  }
+
+  const handleDiscardNavigation = async () => {
+    if (!pendingNavigation) return
+    const discardCb = (window as any).cmsDiscardCallback
+    if (typeof discardCb === 'function') {
+      try {
+        await discardCb()
+      } catch (e) {
+        console.error('Discard callback failed:', e)
+      }
+    }
+    ;(window as any).cmsIsDirty = false
+    
+    if (pendingNavigation.isSignOut) {
+      await signOut()
+      navigate('/login')
+    } else {
+      navigate(pendingNavigation.path)
+    }
+    setPendingNavigation(null)
+  }
 
   // Determine console titles
   const userRoleTitle = formatRole(authoritativeRole || '', {
@@ -110,8 +154,12 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
   const navItems = isSysAdmin ? systemNavItems : academicNavItems
 
   const handleSignOut = async () => {
-    await signOut()
-    navigate('/login')
+    if ((window as any).cmsIsDirty) {
+      setPendingNavigation({ path: '', isSignOut: true })
+    } else {
+      await signOut()
+      navigate('/login')
+    }
   }
 
   return (
@@ -159,7 +207,13 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
               <button
                 key={item.label}
                 type="button"
-                onClick={() => navigate(item.path)}
+                onClick={() => {
+                  if ((window as any).cmsIsDirty) {
+                    setPendingNavigation({ path: item.path })
+                  } else {
+                    navigate(item.path)
+                  }
+                }}
                 className={`${baseClasses} ${isActive
                   ? 'bg-dyci-blue text-white shadow-lg shadow-dyci-blue/20'
                   : 'text-slate-600 hover:bg-slate-50 hover:text-dyci-blue'
@@ -242,8 +296,12 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
                     key={item.label}
                     type="button"
                     onClick={() => {
-                      navigate(item.path)
-                      setMobileOpen(false)
+                      if ((window as any).cmsIsDirty) {
+                        setPendingNavigation({ path: item.path })
+                      } else {
+                        navigate(item.path)
+                        setMobileOpen(false)
+                      }
                     }}
                     className={`${baseClasses} relative ${isActive
                       ? 'bg-dyci-blue text-white shadow-md'
@@ -300,6 +358,43 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           </Suspense>
         </div>
       </main>
+      {pendingNavigation && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm px-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6 space-y-5 border border-slate-100 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 shrink-0 rounded-full bg-amber-50 flex items-center justify-center border border-amber-200">
+                <FaExclamationTriangle className="text-amber-500 text-sm" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-semibold text-slate-900 text-sm font-inter">Unsaved Changes</h3>
+                <p className="text-xs text-slate-500 font-inter leading-relaxed">
+                  You have unsaved edits in the Policy Editor. Would you like to save them before leaving?
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                onClick={handleConfirmNavigation}
+                className="w-full px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold uppercase tracking-wider transition-colors shadow-sm"
+              >
+                Save & Proceed
+              </button>
+              <button
+                onClick={handleDiscardNavigation}
+                className="w-full px-4 py-2.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 text-xs font-semibold transition-colors"
+              >
+                Discard Changes
+              </button>
+              <button
+                onClick={() => setPendingNavigation(null)}
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-medium transition-colors"
+              >
+                Keep Editing (Cancel)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

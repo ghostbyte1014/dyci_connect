@@ -14,7 +14,8 @@ import {
   FaUserTag,
   FaUserSlash,
   FaUserCheck,
-  FaEye
+  FaEye,
+  FaQuestionCircle
 } from 'react-icons/fa';
 import { supabase } from '../../lib/supabaseClient';
 import toast from 'react-hot-toast';
@@ -583,19 +584,63 @@ const SysAdminUsers: React.FC = () => {
         {/* Telemetry */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-4 lg:gap-6">
           <div className="bg-white rounded-2xl border-y border-r border-y-slate-100 border-r-slate-100 border-l-[6px] border-l-slate-200 p-4 sm:p-5 lg:p-6 shadow-sm">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Users</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Users</p>
+              <div className="relative group/tooltip inline-block">
+                <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-48">
+                  <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center whitespace-normal">
+                    Total number of accounts registered in the system.
+                  </div>
+                  <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                </div>
+              </div>
+            </div>
             <p className="text-2xl font-bold text-slate-800 mt-2">{users.length}</p>
           </div>
           <div className="bg-white rounded-2xl border-y border-r border-y-slate-100 border-r-slate-100 border-l-[6px] border-l-emerald-500 p-4 sm:p-5 lg:p-6 shadow-sm">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Now</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Now</p>
+              <div className="relative group/tooltip inline-block">
+                <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-48">
+                  <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center whitespace-normal">
+                    Users who have successfully completed email verification.
+                  </div>
+                  <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                </div>
+              </div>
+            </div>
             <p className="text-2xl font-bold text-emerald-600 mt-2">{users.filter(u => u.verified).length}</p>
           </div>
           <div className="bg-white rounded-2xl border-y border-r border-y-slate-100 border-r-slate-100 border-l-[6px] border-l-dyci-blue p-4 sm:p-5 lg:p-6 shadow-sm">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Admins</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Admins</p>
+              <div className="relative group/tooltip inline-block">
+                <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-48">
+                  <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center whitespace-normal">
+                    Users with administrative privileges (System Admin or Academic Admin).
+                  </div>
+                  <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                </div>
+              </div>
+            </div>
             <p className="text-2xl font-bold text-dyci-blue mt-2">{users.filter(u => u.level >= 80).length}</p>
           </div>
           <div className="bg-white rounded-2xl border-y border-r border-y-slate-100 border-r-slate-100 border-l-[6px] border-l-amber-500 p-4 sm:p-5 lg:p-6 shadow-sm">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Unverified Users</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Unverified Users</p>
+              <div className="relative group/tooltip inline-block">
+                <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-48">
+                  <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center whitespace-normal">
+                    Accounts that have been provisioned but have not yet verified their email.
+                  </div>
+                  <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                </div>
+              </div>
+            </div>
             <p className="text-2xl font-bold text-amber-500 mt-2">{users.filter(u => !u.verified).length}</p>
           </div>
         </section>
@@ -634,10 +679,62 @@ const SysAdminUsers: React.FC = () => {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-50 bg-slate-50/50">
-                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">User Details</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Identifier</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Access Level</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">State</th>
+                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    <div className="flex items-center gap-1.5">
+                      <span>User Details</span>
+                      <div className="relative group/tooltip inline-block normal-case">
+                        <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                        <div className="absolute top-full left-0 mt-1.5 hidden group-hover/tooltip:block z-50 w-48">
+                          <div className="w-1.5 h-1.5 bg-blue-50 border-l border-t border-blue-100 rotate-45 ml-2 -mb-1 relative z-10" />
+                          <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-left whitespace-normal relative z-0">
+                            User's full name and registered email address.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </th>
+                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    <div className="flex items-center gap-1.5">
+                      <span>Identifier</span>
+                      <div className="relative group/tooltip inline-block normal-case">
+                        <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                        <div className="absolute top-full left-0 mt-1.5 hidden group-hover/tooltip:block z-50 w-48">
+                          <div className="w-1.5 h-1.5 bg-blue-50 border-l border-t border-blue-100 rotate-45 ml-2 -mb-1 relative z-10" />
+                          <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-left whitespace-normal relative z-0">
+                            Unique ID assigned to the student or employee.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </th>
+                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    <div className="flex items-center gap-1.5">
+                      <span>Access Level</span>
+                      <div className="relative group/tooltip inline-block normal-case">
+                        <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                        <div className="absolute top-full left-0 mt-1.5 hidden group-hover/tooltip:block z-50 w-48">
+                          <div className="w-1.5 h-1.5 bg-blue-50 border-l border-t border-blue-100 rotate-45 ml-2 -mb-1 relative z-10" />
+                          <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-left whitespace-normal relative z-0">
+                            Role category determining user access level and system privileges.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </th>
+                  <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    <div className="flex items-center gap-1.5">
+                      <span>State</span>
+                      <div className="relative group/tooltip inline-block normal-case">
+                        <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                        <div className="absolute top-full left-0 mt-1.5 hidden group-hover/tooltip:block z-50 w-48">
+                          <div className="w-1.5 h-1.5 bg-blue-50 border-l border-t border-blue-100 rotate-45 ml-2 -mb-1 relative z-10" />
+                          <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-left whitespace-normal relative z-0">
+                            Indicates whether the account has been verified via email.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </th>
                   <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest text-right">Actions</th>
                 </tr>
               </thead>

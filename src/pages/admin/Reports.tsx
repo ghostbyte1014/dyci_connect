@@ -2,6 +2,8 @@ import React, { useEffect, useState, useMemo } from 'react'
 import { supabase, isSupabaseConfigured } from '../../lib/supabaseClient'
 import { fetchPublishedHandbook } from '../../lib/api/handbookWorkflow'
 import { DashboardSkeleton } from '../../components/ui/Skeleton'
+import { FaQuestionCircle } from 'react-icons/fa'
+import toast from 'react-hot-toast'
 
 interface ViewRecord {
   section_id: string
@@ -57,15 +59,18 @@ const Reports: React.FC = () => {
           setProfiles([])
           setViews([])
           setNodes([])
-          setLoading(false)
+          setLoading(false);
+          toast.error(`No published handbook: ${handbookError || 'Not found'}`);
         }
         return
       }
 
+      toast.success(`Active Handbook: ${publishedHandbook.title}`, { id: 'active-handbook-toast' });
+
       // Fetch data only for published handbook + all departments for legend
       const [profilesRes, nodesRes, deptsRes] = await Promise.all([
         supabase.from('profiles').select(`
-          id, email, verified, first_name, last_name,
+          id, email, verified, first_name, last_name, role,
           student:student_profiles(departments(name)),
           staff:staff_profiles(departments(name))
         `),
@@ -73,14 +78,18 @@ const Reports: React.FC = () => {
         supabase.from('departments').select('name').order('name')
       ])
 
-      const sectionIds = (nodesRes.data || []).map((n: any) => n.id)
-      const viewsRes = sectionIds.length > 0
-        ? await supabase.from('handbook_views').select('section_id, user_id, viewed_at, duration_seconds').in('section_id', sectionIds)
-        : { data: [], error: null }
+      const viewsRes = await supabase.from('handbook_views').select('section_id, user_id, viewed_at, duration_seconds')
 
-      if (profilesRes.error) console.error('Reports: profiles query failed', profilesRes.error)
-      if (viewsRes.error) console.error('Reports: views query failed', viewsRes.error)
-      if (nodesRes.error) console.error('Reports: nodes query failed', nodesRes.error)
+      if (profilesRes.error) {
+        console.error('Reports: profiles query failed', profilesRes.error);
+        toast.error(`Profiles query fail: ${profilesRes.error.message}`);
+      }
+      if (viewsRes.error) {
+        console.error('Reports: views query failed', viewsRes.error);
+      }
+      if (nodesRes.error) {
+        console.error('Reports: nodes query failed', nodesRes.error);
+      }
       if (deptsRes.error) console.error('Reports: depts query failed', deptsRes.error)
 
       if (!cancelled) {
@@ -101,7 +110,18 @@ const Reports: React.FC = () => {
             return d.name;
           };
 
-          const dept = getDeptNameFromJoin(sp) || getDeptNameFromJoin(sfp) || 'Unknown';
+          const getRoleDisplayName = (role: string) => {
+            switch (role) {
+              case 'system_admin': return 'System Admin';
+              case 'academic_admin': return 'Academic Admin';
+              case 'staff': return 'Staff';
+              case 'student': return 'Student';
+              default: return role ? role.replace(/_/g, ' ') : 'Unknown';
+            }
+          };
+
+          const rawDept = getDeptNameFromJoin(sp) || getDeptNameFromJoin(sfp);
+          const dept = rawDept || getRoleDisplayName(p.role);
 
           return {
             id: p.id,
@@ -113,8 +133,12 @@ const Reports: React.FC = () => {
           };
         })
 
+        // Filter views to only include those belonging to the active published handbook
+        const activeSectionIds = new Set((nodesRes.data || []).map((n: any) => n.id));
+        const filteredViews = ((viewsRes.data as any) || []).filter((v: any) => activeSectionIds.has(v.section_id));
+
         setProfiles(mappedProfiles)
-        setViews((viewsRes.data as any) || [])
+        setViews(filteredViews)
         setNodes(nodesRes.data || [])
         setLoading(false)
       }
@@ -159,13 +183,15 @@ const Reports: React.FC = () => {
     // Convert to array
     const result = Array.from(map.entries()).map(([id, data]) => {
       const nodeInfo = nodes.find(n => n.id === id)
+      const parentNode = nodeInfo && nodeInfo.parent_id ? nodes.find(n => n.id === nodeInfo.parent_id) : null
       return {
         id,
         title: nodeInfo ? nodeInfo.title : (data.views > 0 ? `Legacy/Other Section (${id.slice(0, 8)})` : `Section ${id}`),
         depth: nodeInfo ? (nodeInfo.parent_id === null ? 0 : 1) : -1,
         views: data.views,
         uniqueUsersCount: data.uniqueUsers.size,
-        totalSeconds: data.totalSeconds
+        totalSeconds: data.totalSeconds,
+        parentTitle: parentNode ? parentNode.title : null
       }
     })
 
@@ -223,12 +249,7 @@ const Reports: React.FC = () => {
     const match = Object.keys(COLLEGE_COLORS).find(k => dept.toLowerCase().includes(k.toLowerCase()) || k.toLowerCase().includes(dept.toLowerCase()))
     if (match) return COLLEGE_COLORS[match]
 
-    // Cycle through palette for unknown depts
-    const extraColors = [
-      '#6366f1', '#a855f7', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#06b6d4'
-    ]
-    const index = Math.abs(dept.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % extraColors.length
-    return extraColors[index]
+    return FALLBACK_COLOR
   }
 
   // Top 5 users by number of accesses
@@ -392,18 +413,36 @@ const Reports: React.FC = () => {
             <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               {/* Top accessed sections */}
               <div className="bg-white rounded-lg border border-slate-100 shadow-sm px-4 py-3">
-                <h2 className="text-sm font-semibold text-slate-900 mb-4">
-                  Top 5 Accessed Sections
-                </h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Top 5 Accessed Sections
+                  </h2>
+                  <div className="relative group/tooltip inline-block">
+                    <FaQuestionCircle className="text-slate-400 hover:text-dyci-blue cursor-help text-xs transition-colors" />
+                    <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-56">
+                      <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[10px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center">
+                        Ranks handbook chapters and sections by their total number of page views.
+                      </div>
+                      <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                    </div>
+                  </div>
+                </div>
                 <div className="space-y-4">
                   {topSections.length > 0 ? topSections.map((sec) => {
                     const maxViews = topSections[0].views || 1;
                     const percent = Math.max(5, Math.round((sec.views / maxViews) * 100));
                     return (
                       <div key={sec.id} className="relative">
-                        <div className="flex justify-between text-xs mb-1">
-                          <span className="font-medium text-slate-700 truncate pr-4">{sec.title}</span>
-                          <span className="text-slate-500 shrink-0">{sec.views} views</span>
+                        <div className="flex justify-between items-start text-xs mb-1">
+                          <div className="flex flex-col truncate pr-4">
+                            <span className="font-medium text-slate-700 truncate">{sec.title}</span>
+                            {sec.parentTitle && (
+                              <span className="text-[10px] text-slate-400 truncate font-normal">
+                                in {sec.parentTitle}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-slate-500 shrink-0 self-start">{sec.views} views</span>
                         </div>
                         <div className="w-full bg-slate-100 rounded-full h-2">
                           <div
@@ -423,9 +462,20 @@ const Reports: React.FC = () => {
 
               {/* Top 5 Handbook Browsers (by access count) */}
               <div className="bg-white rounded-lg border border-slate-100 shadow-sm px-4 py-4 flex flex-col">
-                <h2 className="text-sm font-semibold text-slate-900 mb-4">
-                  Top 5 Readers
-                </h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Top 5 Readers
+                  </h2>
+                  <div className="relative group/tooltip inline-block">
+                    <FaQuestionCircle className="text-slate-400 hover:text-dyci-blue cursor-help text-xs transition-colors" />
+                    <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-56">
+                      <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[10px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center">
+                        Identifies the users who have viewed or opened handbook sections the most times, color-coded by department.
+                      </div>
+                      <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                    </div>
+                  </div>
+                </div>
                 <div className="space-y-4 flex-1">
                   {topBrowsers.length > 0 ? topBrowsers.map((u, idx) => {
                     const maxCount = topBrowsers[0].count || 1;
@@ -467,9 +517,20 @@ const Reports: React.FC = () => {
 
               {/* Top 5 Most Engaged Users (by duration) */}
               <div className="bg-white rounded-lg border border-slate-100 shadow-sm px-4 py-4 flex flex-col">
-                <h2 className="text-sm font-semibold text-slate-900 mb-4">
-                  Top 5 Most Engaged Users
-                </h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Top 5 Most Engaged Users
+                  </h2>
+                  <div className="relative group/tooltip inline-block">
+                    <FaQuestionCircle className="text-slate-400 hover:text-dyci-blue cursor-help text-xs transition-colors" />
+                    <div className="absolute bottom-full right-0 mb-2 hidden group-hover/tooltip:block z-50 w-56">
+                      <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[10px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center">
+                        Identifies the users who have spent the longest cumulative active time reading handbook sections.
+                      </div>
+                      <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-auto mr-1.5 -mt-1" />
+                    </div>
+                  </div>
+                </div>
                 <div className="space-y-4 flex-1">
                   {topUsers.length > 0 ? topUsers.map((u, idx) => {
                     const maxDuration = topUsers[0].duration || 1;
@@ -513,9 +574,20 @@ const Reports: React.FC = () => {
             {/* Detailed metrics table */}
             <section className="bg-white rounded-lg border border-slate-100 shadow-sm px-4 py-3 text-[11px] text-slate-700">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
-                <h2 className="text-sm font-semibold text-slate-900">
-                  Detailed Section Metrics
-                </h2>
+                <div className="flex items-center gap-1.5">
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Detailed Section Metrics
+                  </h2>
+                  <div className="relative group/tooltip inline-block">
+                    <FaQuestionCircle className="text-slate-400 hover:text-dyci-blue cursor-help text-xs transition-colors" />
+                    <div className="absolute bottom-full left-0 mb-2 hidden group-hover/tooltip:block z-50 w-64">
+                      <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[10px] p-2 rounded-lg shadow-xl font-medium leading-normal text-left whitespace-normal">
+                        Provides granular analytics for each handbook section. Use the search bar to filter by title, the dropdown to filter by chapters or sections, and click the column headers to sort the metrics.
+                      </div>
+                      <div className="w-2 h-2 bg-blue-50 border-r border-b border-blue-100 rotate-45 ml-2.5 -mt-1" />
+                    </div>
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   <select
                     value={metricsTypeFilter}
@@ -540,25 +612,37 @@ const Reports: React.FC = () => {
                   <thead>
                     <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wider">
                       <th className="py-2 pr-4 font-semibold">Section Title</th>
+                      <th className="py-2 pr-4 font-semibold">Parent Section</th>
                       {([
-                        ['views', 'Total Views'],
-                        ['time', 'Time Spent'],
-                        ['readers', 'Unique Readers'],
-                        ['rate', 'Read Rate'],
-                      ] as const).map(([col, label]) => (
+                        ['views', 'Total Views', 'Total times this section has been viewed'],
+                        ['time', 'Time Spent', 'Total cumulative active reading time spent by all users'],
+                        ['readers', 'Unique Readers', 'Total number of distinct users who accessed this section'],
+                        ['rate', 'Read Rate', 'Percentage of verified active users who have read this section'],
+                      ] as const).map(([col, label, desc]) => (
                         <th key={col} className="py-2 pr-4 font-semibold text-right">
-                          <button
-                            type="button"
-                            onClick={() => toggleMetricsSort(col)}
-                            className="inline-flex items-center gap-1 hover:text-slate-700 transition-colors"
-                          >
-                            {label}
-                            <span className="text-[9px]">
-                              {metricsSortCol === col
-                                ? metricsSortDir === 'desc' ? '▼' : '▲'
-                                : '⇅'}
-                            </span>
-                          </button>
+                          <div className="inline-flex items-center justify-end gap-1.5 w-full">
+                            <button
+                              type="button"
+                              onClick={() => toggleMetricsSort(col)}
+                              className="inline-flex items-center gap-1 hover:text-slate-700 transition-colors"
+                            >
+                              {label}
+                              <span className="text-[9px]">
+                                {metricsSortCol === col
+                                  ? metricsSortDir === 'desc' ? '▼' : '▲'
+                                  : '⇅'}
+                              </span>
+                            </button>
+                            <div className="relative group/tooltip inline-block">
+                              <FaQuestionCircle className="text-slate-300 hover:text-dyci-blue cursor-help text-[10px] transition-colors" />
+                              <div className="absolute top-full right-0 mt-1.5 hidden group-hover/tooltip:block z-50 w-48">
+                                <div className="w-1.5 h-1.5 bg-blue-50 border-l border-t border-blue-100 rotate-45 ml-auto mr-2 -mb-1 relative z-10" />
+                                <div className="bg-blue-50 text-blue-900 border border-blue-100 text-[9px] p-2 rounded-lg shadow-xl font-medium leading-normal text-center whitespace-normal relative z-0">
+                                  {desc}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </th>
                       ))}
                     </tr>
@@ -572,6 +656,9 @@ const Reports: React.FC = () => {
                       return (
                         <tr key={sec.id} className="hover:bg-slate-50 transition-colors">
                           <td className="py-3 pr-4 font-medium text-slate-900">{sec.title}</td>
+                          <td className="py-3 pr-4 text-slate-500 font-normal">
+                            {sec.parentTitle || <span className="text-slate-300 italic font-light">None (Top Level)</span>}
+                          </td>
                           <td className="py-3 pr-4 text-right">{sec.views.toLocaleString()}</td>
                           <td className="py-3 pr-4 text-right">{fmtDuration(sec.totalSeconds)}</td>
                           <td className="py-3 pr-4 text-right">{sec.uniqueUsersCount.toLocaleString()}</td>
@@ -584,7 +671,7 @@ const Reports: React.FC = () => {
                       );
                     }) : (
                       <tr>
-                        <td colSpan={5} className="py-8 text-center text-slate-400">
+                        <td colSpan={6} className="py-8 text-center text-slate-400">
                           No handbook node data available.
                         </td>
                       </tr>

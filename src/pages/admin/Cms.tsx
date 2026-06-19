@@ -139,22 +139,24 @@ const ProgressBar: React.FC<{ currentLevel: number }> = ({ currentLevel }) => {
 
 // ── Modals ─────────────────────────────────────────────────────────────────
 
-interface ConfirmModalProps { nodeId: string; onConfirm: () => void; onCancel: () => void }
-const ConfirmModal: React.FC<ConfirmModalProps> = ({ nodeId, onConfirm, onCancel }) => (
+interface ConfirmModalProps { nodeId: string; itemType: 'handbook' | 'chapter' | 'section'; onConfirm: () => void; onCancel: () => void }
+const ConfirmModal: React.FC<ConfirmModalProps> = ({ nodeId, itemType, onConfirm, onCancel }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-    <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4">
+    <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl p-6 space-y-4 animate-in fade-in zoom-in duration-200">
       <div className="flex items-start gap-3">
         <div className="h-10 w-10 shrink-0 rounded-full bg-rose-50 flex items-center justify-center">
           <FaExclamationTriangle className="text-rose-500 text-sm" />
         </div>
         <div>
-          <h3 className="font-semibold text-slate-900 text-sm">Delete node?</h3>
-          <p className="mt-1 text-xs text-slate-500">This will permanently delete <span className="font-mono font-semibold text-slate-700">{nodeId}</span> and all its children.</p>
+          <h3 className="font-semibold text-slate-900 text-sm font-inter">Delete {itemType}?</h3>
+          <p className="mt-1 text-xs text-slate-500 font-inter leading-relaxed">
+            This will permanently delete the {itemType} <strong className="text-slate-700">"{nodeId}"</strong> and all of its contents. This action cannot be undone.
+          </p>
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
-        <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
-        <button onClick={onConfirm} className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold">Delete</button>
+        <button onClick={onCancel} className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
+        <button onClick={onConfirm} className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition-colors">Delete</button>
       </div>
     </div>
   </div>
@@ -191,7 +193,7 @@ const KeywordModal: React.FC<KeywordModalProps> = ({ value, onChange, onConfirm,
 
 // ── Tree node ─────────────────────────────────────────────────────────────
 
-interface TreeNodeProps { node: HandbookNode; selectedId: string | null; onSelect: (id: string) => void; onAddChild: (parentId: string, parentDepth: number) => void; onDelete: (id: string) => void; isPublished?: boolean; depth?: number }
+interface TreeNodeProps { node: HandbookNode; selectedId: string | null; onSelect: (id: string) => void; onAddChild: (parentId: string, parentDepth: number) => void; onDelete: (node: HandbookNode) => void; isPublished?: boolean; depth?: number }
 const TreeNode: React.FC<TreeNodeProps> = ({ node, selectedId, onSelect, onAddChild, onDelete, isPublished, depth = 0 }) => {
   const [open, setOpen] = useState(depth === 0)
   const isSelected = selectedId === node.id
@@ -208,7 +210,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, selectedId, onSelect, onAddCh
         {!isPublished && (
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
             <button onClick={(e) => { e.stopPropagation(); onAddChild(node.id, node.depth) }} title="Add child" className="p-1 hover:bg-blue-200 rounded text-blue-600"><FaPlus className="text-[10px]" /></button>
-            <button onClick={(e) => { e.stopPropagation(); onDelete(node.id) }} className="p-1 hover:bg-rose-200 rounded text-rose-500"><FaTrash className="text-[10px]" /></button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(node) }} className="p-1 hover:bg-rose-200 rounded text-rose-500"><FaTrash className="text-[10px]" /></button>
           </div>
         )}
       </div>
@@ -231,8 +233,9 @@ const Cms: React.FC = () => {
   const [tree, setTree] = useState<HandbookNode[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingMessage, setSavingMessage] = useState('Saving changes...')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<HandbookNode | null>(null)
   const [workflowSaving, setWorkflowSaving] = useState(false)
   const [newHandbookTitle, setNewHandbookTitle] = useState('')
   const [newAcademicYearId, setNewAcademicYearId] = useState('')
@@ -255,6 +258,32 @@ const Cms: React.FC = () => {
   const [cloneHandbookTarget, setCloneHandbookTarget] = useState<Handbook | null>(null)
   const [cloneHandbookTitle, setCloneHandbookTitle] = useState('')
   const [cloneAcademicYearId, setCloneAcademicYearId] = useState('')
+  
+  const [isDirty, setIsDirty] = useState(false)
+  const [pendingNavigation, setPendingNavigation] = useState<{ type: 'switch_node'; targetId: string } | { type: 'go_back' } | null>(null)
+
+  useEffect(() => {
+    ;(window as any).cmsIsDirty = isDirty
+    return () => {
+      ;(window as any).cmsIsDirty = false
+    }
+  }, [isDirty])
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault()
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?'
+        return e.returnValue
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [isDirty])
+
+
 
   useEffect(() => {
     if (cloneHandbookTarget) {
@@ -338,6 +367,69 @@ const Cms: React.FC = () => {
 
   const editorRef = useRef<HTMLDivElement>(null)
   const selectedNode = selectedId ? findNode(tree, selectedId) : null
+
+  const handleSelectNode = (nodeId: string) => {
+    if (nodeId === selectedId) return
+    if (isDirty) {
+      setPendingNavigation({ type: 'switch_node', targetId: nodeId })
+    } else {
+      setSelectedId(nodeId)
+    }
+  }
+
+  const handleConfirmNavigation = async () => {
+    if (!pendingNavigation) return
+    
+    if (pendingNavigation.type === 'switch_node') {
+      setSavingMessage('Saving changes...')
+      setSaving(true)
+      await syncTreeToSections(tree, activeHandbookId)
+      if (selectedNode && selectedNode.depth > 0 && sectionMeta) {
+        await supabase.from('handbook_keywords').delete().eq('section_id', sectionMeta.id)
+        if (currentKeywords.length > 0) {
+          await supabase.from('handbook_keywords').insert(
+            currentKeywords.map(k => ({ keyword: k, section_id: sectionMeta.id }))
+          )
+        }
+      }
+      setSelectedId(pendingNavigation.targetId)
+      setIsDirty(false)
+    } else if (pendingNavigation.type === 'go_back') {
+      setSavingMessage('Saving changes...')
+      setSaving(true)
+      await syncTreeToSections(tree, activeHandbookId)
+      if (selectedNode && selectedNode.depth > 0 && sectionMeta) {
+        await supabase.from('handbook_keywords').delete().eq('section_id', sectionMeta.id)
+        if (currentKeywords.length > 0) {
+          await supabase.from('handbook_keywords').insert(
+            currentKeywords.map(k => ({ keyword: k, section_id: sectionMeta.id }))
+          )
+        }
+      }
+      setIsDirty(false)
+      setView('list')
+      await loadWorkflowHandbooks()
+    }
+    setPendingNavigation(null)
+    setSaving(false)
+    toast.success('Saved & navigated ✓')
+  }
+
+  const handleDiscardNavigation = async () => {
+    if (!pendingNavigation) return
+    setLoading(true)
+    await loadTree()
+    
+    if (pendingNavigation.type === 'switch_node') {
+      setSelectedId(pendingNavigation.targetId)
+    } else if (pendingNavigation.type === 'go_back') {
+      setView('list')
+      await loadWorkflowHandbooks()
+    }
+    setIsDirty(false)
+    setPendingNavigation(null)
+    setLoading(false)
+  }
 
   const filteredTree = useMemo(() => {
     if (!searchTerm.trim()) return tree;
@@ -523,9 +615,17 @@ const Cms: React.FC = () => {
     const newTree = [...tree, node]
     setTree(newTree); setSelectedId(newId)
     if (isSupabaseConfigured) {
+      setSavingMessage('Adding chapter...')
       setSaving(true)
       await syncTreeToSections(newTree, activeHandbookId)
-      await loadTree() // Reload so node gets its real db_id UUID
+      const { data: refreshedTree } = await fetchHandbookTree(activeHandbookId)
+      if (refreshedTree && refreshedTree.length > 0) {
+        setTree(refreshedTree)
+        const newChapter = refreshedTree[refreshedTree.length - 1]
+        if (newChapter) {
+          setSelectedId(newChapter.id)
+        }
+      }
       await loadWorkflowSections() // Reload workflow sections
       setSaving(false)
       toast.success('Chapter created')
@@ -542,24 +642,19 @@ const Cms: React.FC = () => {
     const newTree = updateNodeInTree(tree, parentId, { children: [...(findNode(tree, parentId)?.children ?? []), node] })
     setTree(newTree); setSelectedId(newId)
     if (isSupabaseConfigured) {
+      setSavingMessage('Adding section...')
       setSaving(true)
       await syncTreeToSections(newTree, activeHandbookId)
       // Reload tree to get the new UUID from database
       const { data: refreshedTree } = await fetchHandbookTree(activeHandbookId)
       if (refreshedTree && refreshedTree.length > 0) {
         setTree(refreshedTree)
-        // Find the newly created section by its parent_id and sort_order
-        const findNewSection = (nodes: HandbookNode[]): HandbookNode | null => {
-          for (const n of nodes) {
-            if (n.parent_id === parentId && n.sort_order === childCount) {
-              return n
-            }
-            const found = findNewSection(n.children)
-            if (found) return found
-          }
-          return null
-        }
-        const newSection = findNewSection(refreshedTree)
+        // Find the newly created section in the refreshed tree as the last child of parent
+        const parentNodeInRefreshed = findNode(refreshedTree, parentId)
+        const newSection = parentNodeInRefreshed && parentNodeInRefreshed.children.length > 0
+          ? parentNodeInRefreshed.children[parentNodeInRefreshed.children.length - 1]
+          : null
+
         if (newSection) {
           setSelectedId(newSection.id)
           // Reload workflow sections and load data for this section
@@ -580,8 +675,8 @@ const Cms: React.FC = () => {
   const confirmDelete = async () => {
     if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!pendingDelete) return
-    const id = pendingDelete; setPendingDelete(null)
-    const nodeToDelete = findNode(tree, id)
+    const nodeToDelete = pendingDelete; setPendingDelete(null)
+    const id = nodeToDelete.id
     const newTree = removeNodeFromTree(tree, id)
     setTree(newTree); if (selectedId === id) setSelectedId(null)
     if (isSupabaseConfigured) {
@@ -602,8 +697,17 @@ const Cms: React.FC = () => {
     }
   }
 
-  const handleFieldChange = (key: 'title' | 'content', value: string) => { if (!selectedId) return; setTree((t) => updateNodeInTree(t, selectedId, { [key]: value })) }
-  const handleEditorInput = () => { if (selectedId && editorRef.current) handleFieldChange('content', editorRef.current.innerHTML) }
+  const handleFieldChange = (key: 'title' | 'content', value: string) => {
+    if (!selectedId) return
+    setTree((t) => updateNodeInTree(t, selectedId, { [key]: value }))
+    setIsDirty(true)
+  }
+  const handleEditorInput = () => {
+    if (selectedId && editorRef.current) {
+      handleFieldChange('content', editorRef.current.innerHTML)
+      setIsDirty(true)
+    }
+  }
   const execCmd = (command: string, value?: string) => { document.execCommand(command, false, value); editorRef.current?.focus(); handleEditorInput() }
 
   // ── Auto-save ───────────────────────────────────────────────────────────
@@ -615,6 +719,7 @@ const Cms: React.FC = () => {
     autoSaveTimeout.current = setTimeout(async () => {
       // Auto-save without triggering UI blocking 'saving' state
       await syncTreeToSections(tree, activeHandbookId)
+      setIsDirty(false)
     }, 2000)
     return () => { if (autoSaveTimeout.current) clearTimeout(autoSaveTimeout.current) }
   }, [tree, isSupabaseConfigured, activeHandbookId, selectedNode, activeHandbook])
@@ -622,6 +727,7 @@ const Cms: React.FC = () => {
   const handleSave = async () => {
     if (activeHandbook?.status === 'published') { toast.error('This handbook is published and locked.'); return }
     if (!selectedNode || !isSupabaseConfigured) { toast(isSupabaseConfigured ? 'No node selected' : 'Supabase not configured.', { icon: '⚠️' }); return }
+    setSavingMessage('Saving changes...')
     setSaving(true)
 
     // Sync current tree state to the DB (handles title + content updates)
@@ -637,9 +743,22 @@ const Cms: React.FC = () => {
       }
     }
 
+    setIsDirty(false)
     setSaving(false)
     toast.success('Saved ✓')
   }
+
+  useEffect(() => {
+    ;(window as any).cmsSaveCallback = handleSave
+    ;(window as any).cmsDiscardCallback = async () => {
+      await loadTree()
+      setIsDirty(false)
+    }
+    return () => {
+      delete (window as any).cmsSaveCallback
+      delete (window as any).cmsDiscardCallback
+    }
+  }, [handleSave, loadTree])
 
   const handleGenerateKeywords = async () => {
     if (!selectedNode?.content || !sectionMeta) return
@@ -687,14 +806,23 @@ const Cms: React.FC = () => {
     setShowKeywordModal(true)
   }
 
-  const confirmAddManualKeyword = () => {
+  const confirmAddManualKeyword = async () => {
     if (keywordInput.trim()) {
       const parts = keywordInput.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 0)
       const newKeywords = parts.filter(k => !currentKeywords.includes(k))
 
       if (newKeywords.length > 0) {
-        setCurrentKeywords([...currentKeywords, ...newKeywords])
-        toast.success(`Added ${newKeywords.length} keywords`)
+        const merged = [...currentKeywords, ...newKeywords]
+        setCurrentKeywords(merged)
+
+        if (selectedNode && selectedNode.depth > 0 && sectionMeta) {
+          await supabase.from('handbook_keywords').delete().eq('section_id', sectionMeta.id)
+          await supabase.from('handbook_keywords').insert(
+            merged.map(k => ({ keyword: k, section_id: sectionMeta.id }))
+          )
+        }
+
+        toast.success(`Added & saved ${newKeywords.length} keywords ✓`)
       }
       setShowKeywordModal(false)
       setKeywordInput('')
@@ -910,7 +1038,8 @@ const Cms: React.FC = () => {
         )}
         {pendingDeleteHandbook && (
           <ConfirmModal
-            nodeId={`Handbook: ${pendingDeleteHandbook.title} (${pendingDeleteHandbook.academic_years?.year_name || 'Unknown Year'})`}
+            nodeId={`${pendingDeleteHandbook.title} (${pendingDeleteHandbook.academic_years?.year_name || 'Unknown Year'})`}
+            itemType="handbook"
             onConfirm={handleDeleteHandbook}
             onCancel={() => setPendingDeleteHandbook(null)}
           />
@@ -958,6 +1087,9 @@ const Cms: React.FC = () => {
                   </div>
                   <div className="mt-3 flex items-center gap-2">
                     <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusColors[h.status] ?? 'bg-slate-100 text-slate-600'}`}>{h.status}</span>
+                    {h.academic_years?.is_current && (
+                      <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">Active</span>
+                    )}
                     {h.publish_at && <span className="inline-flex items-center gap-1 text-[10px] text-slate-500"><FaCalendarAlt className="h-2.5 w-2.5" /> {new Date(h.publish_at).toLocaleDateString()}</span>}
                   </div>
                   <p className="mt-2 text-[10px] text-slate-400">Updated {new Date(h.updated_at).toLocaleString()}</p>
@@ -1260,6 +1392,17 @@ const Cms: React.FC = () => {
   // ── EDITOR VIEW ─────────────────────────────────────────────────────────
   return (
     <>
+      {saving && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl p-6 flex flex-col items-center space-y-4 shadow-2xl border border-slate-100 max-w-xs text-center">
+            <FaSpinner className="h-10 w-10 text-blue-700 animate-spin" />
+            <div>
+              <p className="text-sm font-bold text-slate-800 font-inter">{savingMessage}</p>
+              <p className="text-xs text-slate-500 mt-1 font-inter">Please wait while the system synchronizes changes with the server.</p>
+            </div>
+          </div>
+        </div>
+      )}
       {showKeywordModal && (
         <KeywordModal
           value={keywordInput}
@@ -1268,13 +1411,64 @@ const Cms: React.FC = () => {
           onCancel={() => setShowKeywordModal(false)}
         />
       )}
-      {pendingDelete && <ConfirmModal nodeId={pendingDelete} onConfirm={confirmDelete} onCancel={() => setPendingDelete(null)} />}
+      {pendingDelete && (
+        <ConfirmModal 
+          nodeId={pendingDelete.title} 
+          itemType={pendingDelete.depth === 0 ? 'chapter' : 'section'} 
+          onConfirm={confirmDelete} 
+          onCancel={() => setPendingDelete(null)} 
+        />
+      )}
+      {pendingNavigation && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm px-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6 space-y-5 border border-slate-100 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 shrink-0 rounded-full bg-amber-50 flex items-center justify-center border border-amber-200">
+                <FaExclamationTriangle className="text-amber-500 text-sm" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-semibold text-slate-900 text-sm font-inter">Unsaved Changes</h3>
+                <p className="text-xs text-slate-500 font-inter leading-relaxed">
+                  You have unsaved edits in this section. Would you like to save them before leaving?
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                onClick={handleConfirmNavigation}
+                className="w-full px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold uppercase tracking-wider transition-colors shadow-sm"
+              >
+                Save & Proceed
+              </button>
+              <button
+                onClick={handleDiscardNavigation}
+                className="w-full px-4 py-2.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 text-xs font-semibold transition-colors"
+              >
+                Discard Changes
+              </button>
+              <button
+                onClick={() => setPendingNavigation(null)}
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-medium transition-colors"
+              >
+                Keep Editing (Cancel)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="unified-header">
         <div className="unified-header-content flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button 
               type="button" 
-              onClick={() => { setView('list'); loadWorkflowHandbooks() }} 
+              onClick={() => {
+                if (isDirty) {
+                  setPendingNavigation({ type: 'go_back' })
+                } else {
+                  setView('list')
+                  loadWorkflowHandbooks()
+                }
+              }}
               className="p-2 rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
             >
               <FaArrowLeft className="h-3 w-3" />
@@ -1299,7 +1493,7 @@ const Cms: React.FC = () => {
                 className="px-4 py-2 bg-white text-dyci-blue rounded-full text-xs font-bold uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {saving ? <FaSpinner className="text-[10px] animate-spin" /> : <FaSave className="text-[10px]" />} 
-                <span>{saving ? 'Saving…' : 'Save Node'}</span>
+                <span>{saving ? 'Saving…' : 'Save Changes'}</span>
               </button>
             </div>
           )}
@@ -1316,7 +1510,7 @@ const Cms: React.FC = () => {
           <div className="flex-1 overflow-y-auto py-1">
             {loading && <div className="flex items-center justify-center py-10 text-slate-400"><FaSpinner className="animate-spin mr-2" /> Loading…</div>}
             {!loading && filteredTree.length === 0 && <p className="text-xs text-slate-400 italic text-center py-6">No chapters or matches found.</p>}
-            {!loading && filteredTree.map((node) => <TreeNode key={node.id} node={node} selectedId={selectedId} onSelect={setSelectedId} onAddChild={handleAddChild} onDelete={(id) => setPendingDelete(id)} isPublished={activeHandbook?.status === 'published'} />)}
+            {!loading && filteredTree.map((node) => <TreeNode key={node.id} node={node} selectedId={selectedId} onSelect={handleSelectNode} onAddChild={handleAddChild} onDelete={(id) => setPendingDelete(id)} isPublished={activeHandbook?.status === 'published'} />)}
           </div>
         </aside>
 
@@ -1356,8 +1550,6 @@ const Cms: React.FC = () => {
                 <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0">
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-semibold text-slate-700">{selectedNode.depth === 0 ? 'Chapter Content' : 'Section Content'}</span>
-                    <span className="text-slate-300">|</span>
-                    <span className="text-xs text-slate-500 font-mono">{selectedNode.id}</span>
                   </div>
                   {/* Inline formatting toolbar right in the header */}
                   {activeHandbook?.status !== 'published' && (
